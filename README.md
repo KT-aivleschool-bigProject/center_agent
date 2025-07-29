@@ -52,7 +52,7 @@
 - **Build Tool**: Vite
 
 ### 🤖 AI/ML
-- **AI Framework**: OpenAI GPT-3.5-turbo
+- **AI Framework**: OpenAI GPT-4o-mini
 - **API**: FastAPI (AI 서비스 전용)
 - **Agent System**: 멀티 에이전트 아키텍처
 
@@ -76,7 +76,7 @@
 ### 🎯 중앙 관리자 Agent (Manager Agent)
 - **역할**: 사용자 프롬프트 분석 및 적절한 에이전트 선택
 - **기능**: 
-  - OpenAI GPT-3.5-turbo를 사용한 지능적 분석
+  - OpenAI GPT-4o-mini를 사용한 지능적 분석
   - 키워드 기반 fallback 분석
   - 에이전트 선택 신뢰도 평가
 
