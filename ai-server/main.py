@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 import openai
 import json
 
+
+from agents import CodeAgent
+
 # 환경변수 로드
 load_dotenv()
 
@@ -135,44 +138,6 @@ class ManagerAgent:
                 "reason": "일반적인 대화",
                 "confidence": 0.5,
             }
-
-
-class CodeAgent:
-    def __init__(self):
-        self.name = "Code Agent"
-        self.system_prompt = """당신은 전문적인 코드 에이전트입니다. 
-코드 리뷰, 버그 탐지, 코드 품질 개선, Git 저장소 관리 등을 담당합니다.
-
-다음과 같은 작업을 수행할 수 있습니다:
-- 코드 리뷰 및 개선 제안
-- 버그 탐지 및 수정 방법 제시
-- 코드 품질 개선 (성능, 가독성, 보안)
-- Git 명령어 및 워크플로우 안내
-- 프로그래밍 언어별 모범 사례 제시
-
-항상 구체적이고 실용적인 조언을 제공하세요."""
-
-    async def process(self, message: str) -> str:
-        """코드 관련 요청 처리"""
-        if not openai.api_key:
-            return f"코드 에이전트가 처리 중입니다: {message}\n\n코드 리뷰, 버그 탐지, 품질 개선 등의 작업을 수행할 수 있습니다."
-
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": message},
-                ],
-                max_tokens=800,
-                temperature=0.3,
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            print(f"Code Agent 오류: {e}")
-            return f"코드 에이전트 처리 중 오류가 발생했습니다: {str(e)}"
 
 
 class DocumentAgent:
