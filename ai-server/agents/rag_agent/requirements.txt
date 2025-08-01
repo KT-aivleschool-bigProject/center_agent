@@ -1,0 +1,28 @@
+# LangChain 및 LangGraph
+langchain==0.3.24
+langgraph==0.0.35
+langchain-openai>=0.1.8 
+langchain-core>=0.1.43
+langchain-community>=0.0.30
+
+# 문서 임베딩 및 벡터스토어
+faiss-cpu>=1.8.0
+chromadb>=0.4.24
+
+# 파일 처리
+pymupdf
+pypdf
+python-docx
+cryptography>=3.1
+
+# 검색 및 정보 소스
+wikipedia
+google-search-results
+
+# API 및 서버
+fastapi
+uvicorn[standard]
+
+# 웹 UI (선택)
+gradio>=4.15.0
+
