@@ -10,6 +10,7 @@ import json
 
 
 from agents import CodeAgent
+from agents.rag_agent import RAGAgent
 
 # 환경변수 로드
 load_dotenv()
@@ -30,7 +31,7 @@ app = FastAPI(
 # CORS 설정 (React 앱과 통신을 위해)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # React 개발 서버
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8002"],  # React 개발 서버
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -66,10 +67,11 @@ class ManagerAgent:
 1. Code Agent: 코드 리뷰, 버그 탐지, 코드 품질 개선, Git 관리
 2. Document Agent: 문서 작성, 편집, 검색, API 문서 생성
 3. Schedule Agent: 프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배
+4. RAG Agent: 문서 검색 및 지식 기반 질문 답변
 
 응답 형식:
 {
-    "selected_agent": "code|document|schedule|general",
+    "selected_agent": "code|document|schedule|rag|general",
     "reason": "선택 이유",
     "confidence": 0.0-1.0
 }"""
@@ -112,6 +114,15 @@ class ManagerAgent:
             return {
                 "selected_agent": "code",
                 "reason": "코드 관련 요청 감지",
+                "confidence": 0.8,
+            }
+        elif any(
+            word in message_lower
+            for word in ["검색", "찾아", "알려", "질문", "답변", "문서에서", "자료에서"]
+        ):
+            return {
+                "selected_agent": "rag",
+                "reason": "문서 검색/질문 답변 요청 감지",
                 "confidence": 0.8,
             }
         elif any(
@@ -223,6 +234,7 @@ manager_agent = ManagerAgent()
 code_agent = CodeAgent()
 document_agent = DocumentAgent()
 schedule_agent = ScheduleAgent()
+rag_agent = RAGAgent()
 
 
 @app.get("/")
@@ -234,7 +246,7 @@ async def root():
 async def health_check():
     return {
         "status": "healthy",
-        "agents": ["manager", "code", "document", "schedule"],
+        "agents": ["manager", "code", "document", "schedule", "rag"],
         "openai_configured": bool(openai.api_key),
     }
 
@@ -265,13 +277,17 @@ async def process_chat(chat_message: ChatMessage):
         elif selected_agent == "schedule":
             response = await schedule_agent.process(chat_message.message)
             agents_used.append("schedule")
+        elif selected_agent == "rag":
+            response = await rag_agent.process(chat_message.message)
+            agents_used.append("rag")
         else:
             # 일반적인 대화는 모든 에이전트의 도움을 받아 응답
             response = f"안녕하세요! '{chat_message.message}'에 대한 응답입니다.\n\n"
             response += "더 구체적인 요청을 해주시면 적절한 에이전트가 도움을 드릴 수 있습니다:\n"
             response += "• 코드 관련: '코드 리뷰를 해줘', '버그를 찾아줘'\n"
-            response += "• 문서 관련: '문서를 작성해줘', 'API 문서를 만들어줘'\n"
-            response += "• 일정 관련: '일정을 관리해줘', '마일스톤을 설정해줘'"
+            response += "• 문서 검색: '프로젝트에 대해 알려줘', '사용법을 찾아줘'\n"
+            response += "• 문서 작성: '문서를 작성해줘', 'API 문서를 만들어줘'\n"
+            response += "• 일정 관리: '일정을 관리해줘', '마일스톤을 설정해줘'"
 
         processing_time = time.time() - start_time
 
@@ -297,6 +313,8 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
             response = await document_agent.process(chat_message.message)
         elif agent_type == "schedule":
             response = await schedule_agent.process(chat_message.message)
+        elif agent_type == "rag":
+            response = await rag_agent.process(chat_message.message)
         elif agent_type == "manager":
             analysis = await manager_agent.analyze_prompt(chat_message.message)
             response = (
@@ -319,7 +337,19 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
         )
 
 
+@app.post("/ai/rag/add-documents")
+async def add_documents_to_rag(file_paths: List[str]):
+    """RAG Agent에 새 문서 추가"""
+    try:
+        result = await rag_agent.add_documents(file_paths)
+        return {"message": result}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"문서 추가 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8003)

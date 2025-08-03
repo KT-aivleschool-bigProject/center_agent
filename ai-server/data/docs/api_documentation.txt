@@ -1,0 +1,45 @@
+API 문서
+
+1. 기본 엔드포인트
+GET / - 서버 상태 확인
+GET /health - 헬스 체크
+
+2. AI 처리 엔드포인트
+POST /ai/process - 메시지 처리 (자동 에이전트 선택)
+POST /ai/agents/{agent_type} - 특정 에이전트 호출
+
+3. 요청/응답 형식
+
+ChatMessage:
+- message: str (필수)
+- user_id: str (선택)
+
+ChatResponse:
+- response: str
+- agents_used: List[str]
+- processing_time: float
+
+4. 에이전트 타입
+- manager: 관리자 에이전트
+- code: 코드 분석 에이전트
+- document: 문서 관리 에이전트
+- schedule: 일정 관리 에이전트
+- rag: 문서 검색 에이전트
+
+5. 에러 처리
+- 400: 잘못된 요청
+- 404: 존재하지 않는 엔드포인트
+- 500: 서버 내부 오류
+
+6. 인증
+현재 버전에서는 인증이 구현되어 있지 않습니다.
+향후 JWT 토큰 기반 인증을 추가할 예정입니다.
+
+7. RAG 전용 엔드포인트
+POST /ai/rag/add-documents - 새 문서 추가
+요청 형식: {"file_paths": ["path1", "path2"]}
+
+8. 사용 예시
+curl -X POST "http://localhost:8002/ai/process" \
+     -H "Content-Type: application/json" \
+     -d '{"message": "프로젝트에 대해 알려줘"}'
