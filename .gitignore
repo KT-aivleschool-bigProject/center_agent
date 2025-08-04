@@ -66,3 +66,7 @@ jspm_packages/
 
 # dotenv environment variables file
 .env 
+
+# Secret Agents secret keys
+ai-server/agents/schedule/client_secret.json
+ai-server/agents/schedule/token.json
