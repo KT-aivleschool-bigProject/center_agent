@@ -7,7 +7,8 @@ import os
 from dotenv import load_dotenv
 import openai
 import json
-
+import subprocess
+import sys
 
 from agents import CodeAgent
 from agents.rag_agent import RAGAgent
@@ -347,6 +348,16 @@ async def add_documents_to_rag(file_paths: List[str]):
         raise HTTPException(
             status_code=500, detail=f"문서 추가 중 오류가 발생했습니다: {str(e)}"
         )
+
+@app.on_event("startup")
+async def start_schedule_agent():
+    """서버 시작 시 Schedule Agent를 백그라운드에서 실행"""
+    schedule_agent_path = os.path.join(os.path.dirname(__file__), "agents/schedule/schedule_agent.py")
+
+    # 현재 FastAPI가 실행 중인 Python 인터프리터 경로를 그대로 이용
+    current_python = sys.executable
+
+    subprocess.Popen([current_python, schedule_agent_path])
 
 
 if __name__ == "__main__":
