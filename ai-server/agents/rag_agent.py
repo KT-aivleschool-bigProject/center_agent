@@ -1,8 +1,3 @@
-"""
-RAG 기반 LangGraph Agent
-문서를 벡터 DB로 변환하여 저장하고, 사용자 질문에 대해 RAG 방식으로 응답을 생성합니다.
-"""
-
 import os
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -59,7 +54,7 @@ class RAGAgent:
         self._initialize_components()
         self._setup_graph()
         
-        # 테스트 문서는 나중에 로딩 (비동기 함수이므로 별도 호출 필요)
+        # 문서는 첫 번째 요청시 로딩 (비동기 함수이므로 별도 호출 필요)
         self._documents_loaded = False
     
     def _initialize_components(self):
@@ -68,7 +63,7 @@ class RAGAgent:
             # OpenAI API 키 확인
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
-                print("⚠️  RAG Agent: OpenAI API 키가 설정되지 않았습니다.")
+                print("  RAG Agent: OpenAI API 키가 설정되지 않았습니다.")
                 return
             
             # LLM 초기화
@@ -84,10 +79,10 @@ class RAGAgent:
             # 벡터 저장소 디렉토리 생성
             self.vector_db_path.mkdir(parents=True, exist_ok=True)
             
-            print("✅ RAG Agent 구성 요소가 초기화되었습니다.")
+            print(" RAG Agent 구성 요소가 초기화되었습니다.")
             
         except Exception as e:
-            print(f"❌ RAG Agent 초기화 오류: {e}")
+            print(f" RAG Agent 초기화 오류: {e}")
     
     def _setup_graph(self):
         """LangGraph 워크플로우 설정"""
@@ -110,94 +105,23 @@ class RAGAgent:
         # 그래프 컴파일
         self.graph = workflow.compile()
     
-    async def _load_test_documents(self):
-        """테스트용 문서 로딩"""
+    async def _load_documents(self):
+        """문서 디렉토리에서 실제 문서들을 로딩"""
         try:
-            # 문서 디렉토리 생성
+            # 문서 디렉토리 생성 (존재하지 않을 경우)
             self.docs_path.mkdir(parents=True, exist_ok=True)
-            
-            # 테스트 문서 생성 (존재하지 않을 경우)
-            test_doc1_path = self.docs_path / "project_overview.txt"
-            test_doc2_path = self.docs_path / "api_documentation.txt"
-            
-            if not test_doc1_path.exists():
-                with open(test_doc1_path, "w", encoding="utf-8") as f:
-                    f.write("""
-프로젝트 개요
-
-이 프로젝트는 멀티 에이전트 기반의 AI 시스템입니다.
-주요 구성 요소:
-1. Center Agent - 중앙 관리 에이전트
-2. RAG Agent - 문서 검색 및 답변 생성
-3. Code Agent - 코드 리뷰 및 분석
-4. Document Agent - 문서 작성 및 관리
-5. Schedule Agent - 일정 관리
-
-기술 스택:
-- FastAPI (백엔드 서버)
-- React (프론트엔드)
-- LangChain (AI 체인)
-- LangGraph (워크플로우)
-- OpenAI GPT-4o (언어 모델)
-- ChromaDB (벡터 데이터베이스)
-
-프로젝트 목표:
-사용자의 다양한 요청을 분석하여 적절한 전문 에이전트에게 라우팅하고,
-각 에이전트가 협력하여 최적의 답변을 제공하는 시스템 구축.
-                    """)
-            
-            if not test_doc2_path.exists():
-                with open(test_doc2_path, "w", encoding="utf-8") as f:
-                    f.write("""
-API 문서
-
-1. 기본 엔드포인트
-GET / - 서버 상태 확인
-GET /health - 헬스 체크
-
-2. AI 처리 엔드포인트
-POST /ai/process - 메시지 처리 (자동 에이전트 선택)
-POST /ai/agents/{agent_type} - 특정 에이전트 호출
-
-3. 요청/응답 형식
-
-ChatMessage:
-- message: str (필수)
-- user_id: str (선택)
-
-ChatResponse:
-- response: str
-- agents_used: List[str]
-- processing_time: float
-
-4. 에이전트 타입
-- manager: 관리자 에이전트
-- code: 코드 분석 에이전트
-- document: 문서 관리 에이전트
-- schedule: 일정 관리 에이전트
-- rag: 문서 검색 에이전트
-
-5. 에러 처리
-- 400: 잘못된 요청
-- 404: 존재하지 않는 엔드포인트
-- 500: 서버 내부 오류
-
-6. 인증
-현재 버전에서는 인증이 구현되어 있지 않습니다.
-향후 JWT 토큰 기반 인증을 추가할 예정입니다.
-                    """)
             
             # 문서 로딩 및 벡터화
             await self._load_and_vectorize_documents()
             
         except Exception as e:
-            print(f"❌ 테스트 문서 로딩 오류: {e}")
+            print(f"❌ 문서 로딩 오류: {e}")
     
     async def _load_and_vectorize_documents(self):
         """문서를 로딩하고 벡터화하여 저장"""
         try:
             if not self.embeddings:
-                print("⚠️  임베딩 모델이 초기화되지 않았습니다.")
+                print("  임베딩 모델이 초기화되지 않았습니다.")
                 return
             
             documents = []
@@ -212,9 +136,9 @@ ChatResponse:
                             metadata={"source": str(txt_file)}
                         )
                         documents.append(doc)
-                        print(f"✅ 로딩 완료: {txt_file.name}")
+                        print(f" 로딩 완료: {txt_file.name}")
                 except Exception as e:
-                    print(f"❌ {txt_file.name} 로딩 실패: {e}")
+                    print(f" {txt_file.name} 로딩 실패: {e}")
             
             # PDF 파일 로딩
             for pdf_file in self.docs_path.glob("*.pdf"):
@@ -222,9 +146,9 @@ ChatResponse:
                     loader = PyPDFLoader(str(pdf_file))
                     docs = loader.load()
                     documents.extend(docs)
-                    print(f"✅ PDF 로딩 완료: {pdf_file.name}")
+                    print(f" PDF 로딩 완료: {pdf_file.name}")
                 except Exception as e:
-                    print(f"❌ {pdf_file.name} 로딩 실패: {e}")
+                    print(f" {pdf_file.name} 로딩 실패: {e}")
             
             # DOCX 파일 로딩
             for docx_file in self.docs_path.glob("*.docx"):
@@ -232,9 +156,9 @@ ChatResponse:
                     loader = UnstructuredWordDocumentLoader(str(docx_file))
                     docs = loader.load()
                     documents.extend(docs)
-                    print(f"✅ DOCX 로딩 완료: {docx_file.name}")
+                    print(f" DOCX 로딩 완료: {docx_file.name}")
                 except Exception as e:
-                    print(f"❌ {docx_file.name} 로딩 실패: {e}")
+                    print(f" {docx_file.name} 로딩 실패: {e}")
             
             if documents:
                 # 문서 분할
@@ -258,10 +182,11 @@ ChatResponse:
                 
                 print(f"🎯 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
             else:
-                print("⚠️  로딩할 수 있는 문서가 없습니다.")
+                print("⚠️  data/docs 폴더에 문서 파일이 없습니다.")
+                print("💡 문서 파일(.txt, .pdf, .docx)을 data/docs 폴더에 추가해주세요.")
                 
         except Exception as e:
-            print(f"❌ 문서 벡터화 오류: {e}")
+            print(f" 문서 벡터화 오류: {e}")
             import traceback
             traceback.print_exc()
     
@@ -330,7 +255,7 @@ ChatResponse:
             if not self.vectorstore:
                 state["error"] = "벡터 저장소가 초기화되지 않았습니다. 문서를 먼저 로딩해주세요."
                 print("❌ 벡터 저장소가 없습니다. 문서 로딩을 다시 시도합니다.")
-                await self._load_test_documents()  # 문서 재로딩 시도
+                await self._load_documents()  # 문서 재로딩 시도
                 if not self.vectorstore:
                     return state
             
@@ -348,11 +273,11 @@ ChatResponse:
             # 검색된 문서가 없을 경우 대체 응답 준비
             if not docs:
                 state["error"] = "관련 문서를 찾을 수 없습니다."
-                print("⚠️  검색된 문서가 없습니다.")
+                print("  검색된 문서가 없습니다.")
             
         except Exception as e:
             state["error"] = f"문서 검색 중 오류: {str(e)}"
-            print(f"❌ 문서 검색 오류: {e}")
+            print(f" 문서 검색 오류: {e}")
         
         return state
     
@@ -389,11 +314,11 @@ ChatResponse:
                 state["metadata"]["source_count"] = len(result["source_documents"])
                 state["answer"] += f"\n\n📋 참조한 문서: {len(result['source_documents'])}개"
             
-            print("✅ RAG 방식으로 답변이 생성되었습니다.")
+            print(" RAG 방식으로 답변이 생성되었습니다.")
             
         except Exception as e:
             state["error"] = f"답변 생성 중 오류: {str(e)}"
-            print(f"❌ 답변 생성 오류: {e}")
+            print(f" 답변 생성 오류: {e}")
         
         return state
     
@@ -402,7 +327,7 @@ ChatResponse:
         if state.get("error"):
             state["answer"] = f"처리 중 오류가 발생했습니다: {state['error']}"
         
-        print("📤 RAG Agent 처리 완료")
+        print(" RAG Agent 처리 완료")
         return state
     
     async def process(self, message: str) -> str:
@@ -410,7 +335,7 @@ ChatResponse:
         try:
             # 첫 번째 요청시 문서 로딩
             if not self._documents_loaded:
-                await self._load_test_documents()
+                await self._load_documents()
                 self._documents_loaded = True
             
             # 초기 상태 설정
