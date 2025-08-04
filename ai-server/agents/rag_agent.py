@@ -115,7 +115,7 @@ class RAGAgent:
             await self._load_and_vectorize_documents()
             
         except Exception as e:
-            print(f"❌ 문서 로딩 오류: {e}")
+            print(f" 문서 로딩 오류: {e}")
     
     async def _load_and_vectorize_documents(self):
         """문서를 로딩하고 벡터화하여 저장"""
@@ -163,7 +163,7 @@ class RAGAgent:
             if documents:
                 # 문서 분할
                 texts = self.text_splitter.split_documents(documents)
-                print(f"📝 {len(documents)}개 문서를 {len(texts)}개 청크로 분할했습니다.")
+                print(f" {len(documents)}개 문서를 {len(texts)}개 청크로 분할했습니다.")
                 
                 # 벡터 저장소 생성/업데이트
                 if self.vectorstore is None:
@@ -172,18 +172,18 @@ class RAGAgent:
                         embedding=self.embeddings,
                         persist_directory=str(self.vector_db_path)
                     )
-                    print("✅ 새로운 벡터 저장소를 생성했습니다.")
+                    print(" 새로운 벡터 저장소를 생성했습니다.")
                 else:
                     self.vectorstore.add_documents(texts)
-                    print("✅ 기존 벡터 저장소에 문서를 추가했습니다.")
+                    print(" 기존 벡터 저장소에 문서를 추가했습니다.")
                 
                 # RetrievalQA 체인 설정
                 self._setup_retrieval_qa()
                 
-                print(f"🎯 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
+                print(f" 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
             else:
-                print("⚠️  data/docs 폴더에 문서 파일이 없습니다.")
-                print("💡 문서 파일(.txt, .pdf, .docx)을 data/docs 폴더에 추가해주세요.")
+                print("  data/docs 폴더에 문서 파일이 없습니다.")
+                print(" 문서 파일(.txt, .pdf, .docx)을 data/docs 폴더에 추가해주세요.")
                 
         except Exception as e:
             print(f" 문서 벡터화 오류: {e}")
@@ -254,7 +254,7 @@ class RAGAgent:
         try:
             if not self.vectorstore:
                 state["error"] = "벡터 저장소가 초기화되지 않았습니다. 문서를 먼저 로딩해주세요."
-                print("❌ 벡터 저장소가 없습니다. 문서 로딩을 다시 시도합니다.")
+                print(" 벡터 저장소가 없습니다. 문서 로딩을 다시 시도합니다.")
                 await self._load_documents()  # 문서 재로딩 시도
                 if not self.vectorstore:
                     return state
@@ -268,7 +268,7 @@ class RAGAgent:
             docs = retriever.get_relevant_documents(state["question"])
             state["retrieved_docs"] = docs
             
-            print(f"📚 {len(docs)}개의 관련 문서를 검색했습니다.")
+            print(f" {len(docs)}개의 관련 문서를 검색했습니다.")
             
             # 검색된 문서가 없을 경우 대체 응답 준비
             if not docs:
@@ -296,7 +296,7 @@ class RAGAgent:
 • 구체적인 질문을 해주시면 다른 전문 에이전트가 도움을 드릴 수 있습니다.
 • 코드 관련 질문은 'code' 에이전트에게, 문서 작성은 'document' 에이전트에게 문의해보세요."""
                     state["error"] = None  # 에러를 클리어하여 정상 응답으로 처리
-                    print("📝 대체 응답을 생성했습니다.")
+                    print(" 대체 응답을 생성했습니다.")
                     return state
                 else:
                     return state
@@ -312,7 +312,7 @@ class RAGAgent:
             # 소스 문서 정보 추가
             if result.get("source_documents"):
                 state["metadata"]["source_count"] = len(result["source_documents"])
-                state["answer"] += f"\n\n📋 참조한 문서: {len(result['source_documents'])}개"
+                state["answer"] += f"\n\n 참조한 문서: {len(result['source_documents'])}개"
             
             print(" RAG 방식으로 답변이 생성되었습니다.")
             
