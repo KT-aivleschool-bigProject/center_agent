@@ -1,17 +1,27 @@
+# main.py
+"""
+팀 에이전트 시스템의 AI 서버 메인 파일
+이 파일은 FastAPI를 사용하여 AI 서버를 실행합니다.
+"""
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from typing import List, Optional
+from threading import Thread
 import asyncio
 import os
 from dotenv import load_dotenv
 import openai
 import json
-import subprocess
-import sys
 
+# 필요한 에이전트 클래스 임포트
 from agents import CodeAgent
 from agents.rag_agent import RAGAgent
+from agents.schedule.schedule_agent import ScheduleAgent
+from agents.schedule.adapter.web_adapter import WebAdapter
+from agents.schedule import slack_app
 
 # 환경변수 로드
 load_dotenv()
@@ -23,10 +33,27 @@ if not openai.api_key:
         "⚠️  OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 설정해주세요."
     )
 
+@asynccontextmanager
+async def lifespan_slack_service(app: FastAPI):
+    """FastAPI 서버 시작 시 Slack Agent를 백그라운드 스레드에서 실행"""   
+    # 현재 파일 경로 기준으로 ai-server 디렉토리로 이동
+    # ai_server_path = os.path.dirname(__file__)
+
+    try:
+        # Thread로 slack_app 실행
+        slack_thread = Thread(target=slack_app.run_slack_bot, daemon=True)
+        slack_thread.start()
+        print("✅ Slack Agent를 백그라운드 스레드에서 실행했습니다.")
+    except Exception as e:
+        print(f"❌ Slack Agent 실행 중 오류 발생: {e}")
+
+    yield   # FastAPI 서버가 실행되는 동안 이 부분이 유지됩니다.
+
 app = FastAPI(
     title="팀 에이전트 시스템 AI 서버",
     description="멀티 에이전트 기반 AI 처리 서버",
     version="1.0.0",
+    lifespan=lifespan_slack_service,  # Slack Agent를 백그라운드에서 실행
 )
 
 # CORS 설정 (React 앱과 통신을 위해)
@@ -43,6 +70,8 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     message: str
     user_id: Optional[str] = None
+    channel_type: Optional[str] = "web" # 기본값은 'web'으로 설정
+    channel_id: Optional[str] = "web"
 
 
 class AgentResponse(BaseModel):
@@ -191,53 +220,15 @@ class DocumentAgent:
             return f"문서 에이전트 처리 중 오류가 발생했습니다: {str(e)}"
 
 
-class ScheduleAgent:
-    def __init__(self):
-        self.name = "Schedule Agent"
-        self.system_prompt = """당신은 전문적인 일정 관리 에이전트입니다. 
-프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배 등을 담당합니다.
-
-다음과 같은 작업을 수행할 수 있습니다:
-- 프로젝트 일정 계획 및 관리
-- 마일스톤 설정 및 추적
-- 팀원 작업량 분배 및 조율
-- 데드라인 관리 및 알림
-- 스프린트 계획 및 리뷰
-- 리소스 할당 및 최적화
-
-항상 실용적이고 실행 가능한 일정 관리 방안을 제시하세요."""
-
-    async def process(self, message: str) -> str:
-        """일정 관련 요청 처리"""
-        if not openai.api_key:
-            return f"일정 에이전트가 처리 중입니다: {message}\n\n프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배 등의 작업을 수행할 수 있습니다."
-
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": message},
-                ],
-                max_tokens=800,
-                temperature=0.3,
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            print(f"Schedule Agent 오류: {e}")
-            return f"일정 에이전트 처리 중 오류가 발생했습니다: {str(e)}"
-
-
 # 에이전트 인스턴스 생성
 manager_agent = ManagerAgent()
 code_agent = CodeAgent()
 document_agent = DocumentAgent()
-schedule_agent = ScheduleAgent()
+web_schedule_agent = ScheduleAgent(channel="web")  # 웹 채널용 ScheduleAgent
 rag_agent = RAGAgent()
 
 
+# ================ FastAPI 엔드포인트 설정 ================ #
 @app.get("/")
 async def root():
     return {"message": "팀 에이전트 시스템 AI 서버가 실행 중입니다."}
@@ -276,7 +267,19 @@ async def process_chat(chat_message: ChatMessage):
             response = await document_agent.process(chat_message.message)
             agents_used.append("document")
         elif selected_agent == "schedule":
-            response = await schedule_agent.process(chat_message.message)
+            # ScheduleAgent가 선택되면, 웹 어댑터를 생성하여 실행
+            web_adapter = WebAdapter()
+            user_id = chat_message.user_id if chat_message.user_id else "web_user"  # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
+            channel_id = chat_message.channel_id if chat_message.channel_id else "web"
+            
+            # ScheduleAgent의 process 메서드 호출
+            web_schedule_agent.process(
+                message=chat_message.message,
+                adapter=web_adapter, # WebAdapter 인스턴스 전달
+                user_id=user_id,
+                channel_id=channel_id
+            )
+            response = web_adapter.get_response() # WebAdapter에 저장된 응답 가져오기
             agents_used.append("schedule")
         elif selected_agent == "rag":
             response = await rag_agent.process(chat_message.message)
@@ -313,7 +316,19 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
         elif agent_type == "document":
             response = await document_agent.process(chat_message.message)
         elif agent_type == "schedule":
-            response = await schedule_agent.process(chat_message.message)
+            # ScheduleAgent가 선택되면, 웹 어댑터를 생성하여 실행
+            web_adapter = WebAdapter()
+            user_id = chat_message.user_id if chat_message.user_id else "web_user" # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
+            channel_id = chat_message.channel_id if chat_message.channel_id else "web"
+            
+            # ScheduleAgent의 process 메서드 호출
+            web_schedule_agent.process(
+                message=chat_message.message,
+                adapter=web_adapter, # WebAdapter 인스턴스 전달
+                user_id=user_id,
+                channel_id=channel_id
+            )
+            response = await web_adapter.get_response() # WebAdapter에 저장된 응답 가져오기
         elif agent_type == "rag":
             response = await rag_agent.process(chat_message.message)
         elif agent_type == "manager":
@@ -348,16 +363,6 @@ async def add_documents_to_rag(file_paths: List[str]):
         raise HTTPException(
             status_code=500, detail=f"문서 추가 중 오류가 발생했습니다: {str(e)}"
         )
-
-@app.on_event("startup")
-async def start_schedule_agent():
-    """서버 시작 시 Schedule Agent를 백그라운드에서 실행"""
-    schedule_agent_path = os.path.join(os.path.dirname(__file__), "agents/schedule/schedule_agent.py")
-
-    # 현재 FastAPI가 실행 중인 Python 인터프리터 경로를 그대로 이용
-    current_python = sys.executable
-
-    subprocess.Popen([current_python, schedule_agent_path])
 
 
 if __name__ == "__main__":

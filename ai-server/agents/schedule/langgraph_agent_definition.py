@@ -8,35 +8,35 @@ from langgraph.graph import StateGraph, END
 
 # 커스텀 모듈 임포트 (AgentState와 Agent 노드 함수들이 필요)
 # 이 파일들이 같은 디렉토리에 있다고 가정합니다.
-from agent_nodes import slack_message_parser, llm_intent_classifier, llm_calendar_extractor, \
+from .agent_nodes import common_message_parser, llm_intent_classifier, llm_calendar_extractor, \
                         add_google_calendar_event, google_calendar_searcher, \
                         llm_calendar_modifier_extractor, google_calendar_updater, \
                         llm_calendar_deleter_extractor, google_calendar_deleter, \
                         route_by_intent, route_after_search
-from agent_state import AgentState # agent_state.py에서 정의할 상태
+from .agent_state import ScheduleAgentState
 
 # ========= LangGraph Agent 정의 ============== #
 
 # Graph Builder 초기화
-workflow = StateGraph(AgentState)
+workflow = StateGraph(ScheduleAgentState)
 
 # 노드 추가
-workflow.add_node("parse_slack_message", slack_message_parser)           # 슬랙 메시지 파싱
+workflow.add_node("parse_message", common_message_parser)          # 범용 메시지 파서
 workflow.add_node("classify_intent", llm_intent_classifier)              # 의도 분류
 workflow.add_node("extract_calendar_info", llm_calendar_extractor)       # 일정 추가 정보 추출
 workflow.add_node("add_google_calendar_event", add_google_calendar_event)    # 구글 캘린더 일정 추가
-workflow.add_node("search_google_calendar", google_calendar_searcher)    # 일정 검색
+workflow.add_node("search_google_calendar", google_calendar_searcher)        # 일정 검색
 workflow.add_node("extract_modification_info", llm_calendar_modifier_extractor) # 변경 정보 추출
 workflow.add_node("update_google_calendar_event", google_calendar_updater)       # 일정 변경
 workflow.add_node("extract_deletion_info", llm_calendar_deleter_extractor)       # 삭제 정보 추출
 workflow.add_node("delete_google_calendar_event", google_calendar_deleter)       # 일정 삭제
 
 # 시작점 설정
-workflow.set_entry_point("parse_slack_message")
+workflow.set_entry_point("parse_message")
 
 # 엣지 정의
 # 1. Slack 메시지 파싱 후 항상 의도 분류 노드로
-workflow.add_edge("parse_slack_message", "classify_intent")
+workflow.add_edge("parse_message", "classify_intent")
 
 # 2. 의도 분류 결과에 따라 분기 (조건부 엣지)
 workflow.add_conditional_edges(

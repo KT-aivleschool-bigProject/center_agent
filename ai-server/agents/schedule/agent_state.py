@@ -6,18 +6,18 @@ Langgraph Agent의 상태를 정의하는 파일
 """
 
 from typing import TypedDict, Optional
-import slack_sdk # Slack 클라이언트 객체를 타입 힌트로 사용하기 위함
+from .adapter.base_adapter import ChannelAdapter
 
-class AgentState(TypedDict):
+class ScheduleAgentState(TypedDict):
     """
     Langgraph Agent의 현재 상태를 나타내는 TypedDict.
-    Agent의 각 노드에서 이 상태를 읽고 업데이트할 수 있습니다.
+    채널에 종속되지 않는 공통 상태를 정의합니다.
     """
-    slack_message: str              # 원본 Slack 메시지 텍스트
-    cleaned_message: Optional[str]  # 봇 멘션 등이 제거된 정제된 메시지
-    channel_id: str                 # 메시지가 발생한 Slack 채널 ID
+    raw_message: str                # 원본 사용자 입력 메시지
+    cleaned_message: Optional[str]  # Agent가 처리할 정제된 메시지
+    channel_id: str                 # 메시지가 발생한 채널 ID (Slack 채널 ID 또는 'web')
     user_id: str                    # 메시지를 보낸 사용자 ID
-    bot_client: slack_sdk.WebClient # Slack WebClient 인스턴스 (메시지 전송 등에 사용)
+    adapter: ChannelAdapter         # 채널별 응답을 처리할 어댑터 인스턴스
 
     calendar_subject: Optional[str]         # LLM이 추출한 일정 제목
     calendar_start_datetime: Optional[str]  # LLM이 추출한 일정 시작 시간 (ISO 8601)

@@ -2,7 +2,7 @@
 """
 Langgraph Agent 노드 함수 정의
 이 파일은 Langgraph Agent에서 사용하는 각 노드의 비즈니스 로직을 정의합니다.
-각 노드는 AgentState를 입력으로 받아 처리 결과를 반환합니다.
+각 노드는 ScheduleAgentState를 입력으로 받아 처리 결과를 반환합니다.
 """
 import re
 import json
@@ -29,7 +29,7 @@ CLIENT_SECRET_PATH = os.path.join(BASE_DIR, "client_secret.json")
 AUTH_SCRIPT = os.path.join(BASE_DIR, "google_auth_setup.py")  # 인증 스크립트 경로
 
 # LangGraph Agent 상태 및 OpenAI 클라이언트 임포트
-from agent_state import AgentState
+from .agent_state import ScheduleAgentState
 from langchain_openai import ChatOpenAI
 
 # ChatOpenAI 초기화
@@ -125,39 +125,37 @@ def get_google_calendar_service():
     
 
 # ============== 노드 함수 정의 ================ #
-def slack_message_parser(state: AgentState):
+def common_message_parser(state: ScheduleAgentState):
     """
-    Slack 메시지에서 봇 멘션을 제거하고 정제된 텍스트를 추출하는 노드.
+    사용자 메시지를 정제하는 공통 노드.
+    Slack 멘션이나 불필요한 공백을 제거하고, Agent가 처리할 수 있는 순수 메시지를 추출합니다.
     """
-    slack_message = state["slack_message"]
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    raw_message = state["raw_message"] # 변경된 ScheduleAgentState의 필드명 사용
+    adapter = state["adapter"]
 
-    # 봇 멘션 부분을 제거하여 실제 일정 내용만 추출
-    cleaned_text = re.sub(r'<@\w+>\s*', '', slack_message).strip()
+    # Slack 멘션 제거 로직 (Web에서는 영향 없음)
+    cleaned_text = re.sub(r'<@\w+>\s*', '', raw_message).strip()
 
-    # 추출된 내용이 비어있을 경우 사용자에게 안내
+    # 메시지가 비어있는 경우
     if not cleaned_text:
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 추가를 위한 내용을 입력해주세요. 예시: `@Agent이름 내일 10시 팀 회의`")
+        adapter.send_message(text="일정 추가를 위한 내용을 입력해주세요. 예시: `내일 10시 팀 회의`")
         return {"cleaned_message": None, "intent": "unknown", "llm_error": "No content after mention removal"} 
     
-    # 여기서 /schedule 커맨드 예외 처리. 실제 슬래시 커맨드는 별도 핸들러에서 처리될 수 있지만,
-    # 멘션 안에 포함된 경우를 대비하여 처리.
+    # /schedule 커맨드 예외 처리 (Web 및 Slack 슬래시 커맨드에 대비)
     if cleaned_text.lower().startswith('/schedule'):
-        bot_client.chat_postMessage(channel=channel_id, text="`/schedule` 커맨드는 현재 지원되지 않습니다. Agent를 멘션하여 일정을 입력해주세요. 예시: `@Agent이름 내일 10시 팀 회의`")
+        adapter.send_message(text="`/schedule` 커맨드는 현재 지원되지 않습니다. 일정을 직접 입력해주세요. 예시: `내일 10시 팀 회의`")
         return {"cleaned_message": None, "intent": "unknown", "llm_error": "Unsupported command detected"} 
     
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: slack_message_parser - 정제된 메시지: '{cleaned_text}'")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: common_message_parser - 정제된 메시지: '{cleaned_text}'")
     return {"cleaned_message": cleaned_text}
 
 
-def llm_intent_classifier(state: AgentState):
+def llm_intent_classifier(state: ScheduleAgentState):
     """
     LLM을 사용하여 사용자의 의도(추가, 변경, 삭제)를 분류하는 노드.
     """
     cleaned_message = state.get("cleaned_message")
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     # 정제된 메시지 내용물 확인
     if cleaned_message is None:
@@ -169,6 +167,7 @@ def llm_intent_classifier(state: AgentState):
         prompt = f"""
             현재 시각은 {current_datetime_str}야.
             다음 메시지의 의도를 'add'(일정 추가), 'modify'(일정 변경), 'delete'(일정 삭제), 'search'(일정 검색), 'unknown'(알 수 없음) 중 하나로 분류해줘.
+            향후 일정 검색을 위해 일정 키워드를 함께 추출하고 저장해줘.
             메시지: '{cleaned_message}'
 
             \n\n응답 형식:
@@ -177,9 +176,9 @@ def llm_intent_classifier(state: AgentState):
               "date": "검색 날짜 (YYYY-MM-DD)"}}\n
             
             예시:
-            1. "내일 오후 3시 회의 추가해줘" → {{ "intent": "add", "query": "회의", "date": "2025-08-02" }}
-            2. "다음주 목요일 회의 삭제해줘" → {{ "intent": "delete", "query": "회의", "date": "2025-08-08" }}
-            3. "이번주 금요일 일정 알려줘" → {{ "intent": "search", "query": "일정", "date": "2025-08-02" }}
+            1. "내일 오후 3시 회의 추가해줘" → {{ "intent": "add", "query": "팀장님 미팅", "date": "2025-08-02" }}
+            2. "다음주 목요일 회의 삭제해줘" → {{ "intent": "delete", "query": "개발회의", "date": "2025-08-08" }}
+            3. "이번주 금요일 일정 알려줘" → {{ "intent": "search", "query": "회식", "date": "2025-08-02" }}
         """ + relative_date_guidelines
 
         # ChatOpenAI LLM 호출
@@ -204,17 +203,17 @@ def llm_intent_classifier(state: AgentState):
 
     except Exception as e:
         print(f"LLM 의도 분류 중 오류 발생: {e}")
-        bot_client.chat_postMessage(channel=channel_id, text=f"요청 의도를 파악하는 데 실패했습니다: {e}")
+        adapter.send_message(text=f"요청 의도를 파악하는 데 실패했습니다: {e}")
         return {"intent": "unknown", "llm_error": f"Intent classification error: {e}"}
 
+
 # =============== 일정 추가 관련 노드 ================ #
-def llm_calendar_extractor(state: AgentState):
+def llm_calendar_extractor(state: ScheduleAgentState):
     """
     LLM을 사용하여 '일정 추가' 의도에서 캘린더 정보를 추출하는 노드.
     """
     cleaned_message = state.get("cleaned_message")
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     # 정제된 메시지 내용물 확인
     if cleaned_message is None:
@@ -223,27 +222,25 @@ def llm_calendar_extractor(state: AgentState):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: llm_calendar_extractor - LLM 호출 시작")
 
     try:
-        prompt = (
-            f"다음 텍스트에서 '일정 제목', '시작 날짜 및 시간', '종료 날짜 및 시간'을 JSON 형식으로 추출해줘. "
-            f"현재 시각은 '{current_datetime_str}'이야. 이 정보를 기준으로 날짜와 시간을 정확히 추론해줘. "
-            f"만약 사용자가 일정의 **종료 기간, 또는 진행 시간(예: '1시간 30분', '2시간 반', '30분')**을 언급했다면, "
-            f"그 정보를 사용해서 정확한 종료 시간을 계산해줘. "
-            f"**진행 시간 언급이 없는 경우에만** 기본적으로 시작 시간에서 1시간을 더해서 종료 시간을 설정해. "
-            f"예시: '다음주 화요일 오후 5시에 회의 1시간 반 예정', '수요일 오전 11시, 30분 미팅' 등도 고려해. "
-            f"날짜 형식은 'YYYY-MM-DDTHH:MM:SS'로 맞춰줘. "
-            f"추출할 수 없는 경우 빈 문자열로 반환해줘. "
-            f"텍스트: '{cleaned_message}'"
-            f"\n\n**상대적 날짜 표현 지침:**"
-            f"\n- '오늘'은 '{datetime.now().strftime('%Y-%m-%d')}'"
-            f"\n- '내일'은 '{(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}'"
-            f"\n- '모레'는 '{(datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')}'"
-            f"\n- '다음주 화요일'처럼 '다음주'가 붙으면 현재 주의 다음 주 요일로 계산"
-            f"\n- '이번주 금요일'이면 이번 주의 해당 요일로 계산"
+        prompt = f"""
+            다음 메시지에서 '일정 제목', '시작 날짜 및 시간', '종료 날짜 및 시간'을 JSON 형식으로 추출해줘.
+            현재 시각은 '{current_datetime_str}'이야. 이 정보를 기준으로 날짜와 시간을 정확히 추론해줘.
 
-            f"\n\n응답 형식:"
+            만약 사용자가 일정의 **종료 기간, 또는 진행 시간(예: '1시간 30분', '2시간 반', '30분')**을 언급했다면,
+            그 정보를 사용해서 정확한 종료 시간을 계산해줘.
+
+            **진행 시간 언급이 없는 경우에만** 기본적으로 시작 시간에서 1시간을 더해서 종료 시간을 설정해.
+            예시: '다음주 화요일 오후 5시에 회의 1시간 반 예정', '수요일 오전 11시, 30분 미팅' 등도 고려해.
+            날짜 형식은 'YYYY-MM-DDTHH:MM:SS'로 맞춰줘.
+            추출할 수 없는 경우 빈 문자열로 반환해줘.
+
+            메시지 : '{cleaned_message}'
+
+            {relative_date_guidelines} \n\n
+
+            응답 형식:
             f'\n{{"subject": "일정 제목", "start_datetime": "YYYY-MM-DDTHH:MM:SS", "end_datetime": "YYYY-MM-DDTHH:MM:SS"}}'
-        )
-
+        """
 
         # ChatOpenAI LLM 호출
         response = llm_model.invoke(prompt)
@@ -263,7 +260,7 @@ def llm_calendar_extractor(state: AgentState):
             date_info = json.loads(date_info_json_str)
         except json.JSONDecodeError as e:
             print(f"JSON 파싱 오류: {e}. LLM 응답이 유효한 JSON 형식이 아닐 수 있습니다. 원본 응답: '{response.text}'")
-            bot_client.chat_postMessage(channel=channel_id, text="날짜 정보를 파싱하는 데 실패했습니다. 메시지 형식을 확인해주세요.")
+            adapter.send_message(text="날짜 정보를 파싱하는 데 실패했습니다. 메시지 형식을 확인해주세요.")
             return {"llm_error": f"JSON parsing failed: {e}"}
 
         # 일정 정보 추출
@@ -279,16 +276,16 @@ def llm_calendar_extractor(state: AgentState):
                 "calendar_end_datetime": end_datetime_str
             }
         else:
-            bot_client.chat_postMessage(channel=channel_id, text="메시지에서 유효한 일정 정보를 찾을 수 없습니다. 예시: `@Agent이름 내일 10시 팀 회의`")
+            adapter.send_message(text="메시지에서 유효한 일정 정보를 찾을 수 없습니다. 예시: `@Agent이름 내일 10시 팀 회의`")
             return {"llm_error": "No valid calendar info extracted."}
 
     except Exception as e:
         print(f"LLM 처리 중 오류 발생: {e}")
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정을 처리하는 중 오류가 발생했습니다: {e}")
+        adapter.send_message(text=f"일정을 처리하는 중 오류가 발생했습니다: {e}")
         return {"llm_error": f"LLM processing error: {e}"}
 
 
-def add_google_calendar_event(state: AgentState):
+def add_google_calendar_event(state: ScheduleAgentState):
     """
     추출된 캘린더 정보를 사용하여 Google Calendar에 일정을 추가하는 노드.
     """
@@ -296,8 +293,7 @@ def add_google_calendar_event(state: AgentState):
     start_datetime_str = state.get("calendar_start_datetime")
     end_datetime_str = state.get("calendar_end_datetime")
     cleaned_message = state.get("cleaned_message") # 내용으로 재사용
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     # 필수 일정 정보 누락 여부 확인 
     if not (subject and start_datetime_str and end_datetime_str):
@@ -307,7 +303,7 @@ def add_google_calendar_event(state: AgentState):
     if not TARGET_CALENDAR_ID:
         error_msg = "Error: GOOGLE_CALENDAR_ID 환경 변수가 설정되지 않았습니다. 일정을 추가할 수 없습니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_add_success": False, "calendar_add_error": error_msg}
 
     # Google Calendar 서비스 객체 정의
@@ -316,7 +312,7 @@ def add_google_calendar_event(state: AgentState):
     if not service:
         error_msg = "Google Calendar 인증 실패로 일정을 추가할 수 없습니다. 서버 로그를 확인해주세요."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_add_success": False, "calendar_add_error": "Google Calendar service not available."}
 
     try:
@@ -339,7 +335,7 @@ def add_google_calendar_event(state: AgentState):
         event_response = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=event).execute()
         
         success_msg = f"✅ '{subject}' 일정이 Google Calendar에 성공적으로 추가되었습니다."
-        bot_client.chat_postMessage(channel=channel_id, text=success_msg)
+        adapter.send_message(text=success_msg)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: add_google_calendar_event - 일정 추가 성공!")
         return {"calendar_add_success": True, "calendar_action_success": True}
 
@@ -352,36 +348,35 @@ def add_google_calendar_event(state: AgentState):
         except json.JSONDecodeError:
             print(f"응답 본문 (JSON 아님): {http_err.content.decode('utf-8')}")
         
-        bot_client.chat_postMessage(channel=channel_id, text="Google Calendar에 일정을 추가하는 데 실패했습니다. 서버 로그를 확인해주세요.")
+        adapter.send_message(text="Google Calendar에 일정을 추가하는 데 실패했습니다. 서버 로그를 확인해주세요.")
         return {"calendar_add_success": False, "calendar_add_error": str(http_err), "calendar_action_success": False}
     except Exception as e:
         error_msg = f"❌ Google Calendar 일정 추가 중 예상치 못한 오류가 발생했습니다: {e}"
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정을 처리하는 중 오류가 발생했습니다: {e}")
+        adapter.send_message(text=f"일정을 처리하는 중 오류가 발생했습니다: {e}")
         return {"calendar_add_success": False, "calendar_add_error": str(e), "calendar_action_success": False}
 
 
 # =============== 일정 검색 관련 노드 ================ #
-def google_calendar_searcher(state: AgentState):
+def google_calendar_searcher(state: ScheduleAgentState):
     """
     Google Calendar에서 일정을 검색하는 노드. 주로 변경/삭제 전에 사용.
     """
     search_query = state.get("search_query")
     search_date_str = state.get("search_date")
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
     
     if not TARGET_CALENDAR_ID:
         error_msg = "Error: GOOGLE_CALENDAR_ID 환경 변수가 설정되지 않았습니다. 일정을 검색할 수 없습니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"found_events": [], "calendar_action_error": error_msg}
 
     service = get_google_calendar_service()
     if not service:
         error_msg = "Google Calendar 인증 실패로 일정을 검색할 수 없습니다. 서버 로그를 확인해주세요."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"found_events": [], "calendar_action_error": error_msg}
     
     events_result = []
@@ -438,7 +433,7 @@ def google_calendar_searcher(state: AgentState):
         events_result = events_page.get('items', [])
 
         if not events_result:
-            bot_client.chat_postMessage(channel=channel_id, text="검색된 일정이 없습니다. 검색어 또는 날짜를 확인해주세요.")
+            adapter.send_message(text="검색된 일정이 없습니다. 검색어 또는 날짜를 확인해주세요.")
             return {"found_events": [], "calendar_action_error": "No events found."}
         
         response_text = "검색된 일정이 있습니다:\n"
@@ -466,32 +461,31 @@ def google_calendar_searcher(state: AgentState):
         if state["intent"] in ["modify", "delete"]:
             response_text += "어떤 일정을 변경/삭제하시겠습니까? (예: '1번 변경', '2번 삭제')"
 
-        bot_client.chat_postMessage(channel=channel_id, text=response_text)
+        adapter.send_message(text=response_text)
         
         return {"found_events": events_result}
 
     except HttpError as http_err:
         error_msg = f"❌ Google Calendar 일정 검색 중 HTTP 오류 발생: {http_err}"
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text="일정 검색 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
+        adapter.send_message(text="일정 검색 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
         return {"found_events": [], "calendar_action_error": str(http_err)}
     except Exception as e:
         error_msg = f"❌ Google Calendar 일정 검색 중 예상치 못한 오류 발생: {e}"
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 검색 중 오류가 발생했습니다: {e}")
+        adapter.send_message(text=f"일정 검색 중 오류가 발생했습니다: {e}")
         return {"found_events": [], "calendar_action_error": str(e)}
     
 
 # =============== 일정 변경 관련 노드 ================ #
-def llm_calendar_modifier_extractor(state: AgentState):
+def llm_calendar_modifier_extractor(state: ScheduleAgentState):
     """
     LLM을 사용하여 '일정 변경' 의도에서 변경할 일정의 새로운 정보를 추출하는 노드.
     (예: "내일 회의를 11시로 변경해줘" -> 기존 일정 ID와 변경될 시간 정보 추출)
     """
     cleaned_message = state.get("cleaned_message")
     found_events = state.get("found_events", [])
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     if cleaned_message is None or not found_events:
         return {"llm_error": "No cleaned message or events for modification."}
@@ -513,8 +507,8 @@ def llm_calendar_modifier_extractor(state: AgentState):
             - 사용자는 기존 일정 시간과 변경할 시간을 모두 언급할 수 있어.
             - 이때 검색 대상 일정은 '기존 시간' 기준으로 판단하고, 새로 설정할 시간은 변경된 일정 시간이야.
             - 사용자가 진행 시간 또는 종료 시간을 명시하지 않았다면, 기존 일정의 진행시간을 유지해줘.
-            - 사용자가 '1시간 반으로 바꿔줘', '30분만 할래', '2시간 예정; 등으로 **진행 시간 변경을 요청한 경우에만**, 새 시작 시간 기준으로 종료 시간을 계산해서 바꿔줘.
-            - 만약 메시지에 ** 시작과 종료 시간이 모두 정확하게 포함되어 있다면**, 두 시간 모두 반영해줘.
+            - 사용자가 '1시간 반으로 바꿔줘', '30분만 할래', '2시간 예정' 등으로 **진행 시간 변경을 요청한 경우에만**, 새 시작 시간 기준으로 종료 시간을 계산해서 바꿔줘.
+            - 만약 메시지에 **시작과 종료 시간이 모두 정확하게 포함되어 있다면**, 두 시간 모두 반영해줘.
             
             2. 날짜 형식 및 출력 관련 규칙 : 
             날짜 형식을 'YYYY-MM-DDTHH:MM:SS'로 맞춰줘.
@@ -570,16 +564,16 @@ def llm_calendar_modifier_extractor(state: AgentState):
                 "modified_end_datetime": new_end
             }
         else:
-            bot_client.chat_postMessage(channel=channel_id, text="어떤 일정을 변경할지 또는 변경할 내용을 명확히 알려주세요. (예: '1번 일정을 오후 4시로 변경')")
+            adapter.send_message(text="어떤 일정을 변경할지 또는 변경할 내용을 명확히 알려주세요. (예: '1번 일정을 오후 4시로 변경')")
             return {"llm_error": "Invalid event index or missing modification details."}
 
     except Exception as e:
         print(f"LLM 변경 정보 추출 중 오류 발생: {e}")
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 변경 정보를 파악하는 데 실패했습니다: {e}")
+        adapter.send_message(text=f"일정 변경 정보를 파악하는 데 실패했습니다: {e}")
         return {"llm_error": f"LLM modification extraction error: {e}"}
 
 
-def google_calendar_updater(state: AgentState):
+def google_calendar_updater(state: ScheduleAgentState):
     """
     Google Calendar의 일정을 변경하는 노드.
     """
@@ -587,26 +581,25 @@ def google_calendar_updater(state: AgentState):
     modified_subject = state.get("modified_subject")
     modified_start_datetime = state.get("modified_start_datetime")
     modified_end_datetime = state.get("modified_end_datetime")
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     if not (target_event_id and modified_subject and modified_start_datetime and modified_end_datetime):
         error_msg = "일정 변경에 필요한 정보가 부족합니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
     
     if not TARGET_CALENDAR_ID:
         error_msg = "Error: GOOGLE_CALENDAR_ID 환경 변수가 설정되지 않았습니다. 일정을 변경할 수 없습니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
 
     service = get_google_calendar_service()
     if not service:
         error_msg = "Google Calendar 인증 실패로 일정을 변경할 수 없습니다. 서버 로그를 확인해주세요."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
 
     try:
@@ -632,7 +625,7 @@ def google_calendar_updater(state: AgentState):
         ).execute()
 
         success_msg = f"✅ '{modified_subject}' 일정이 성공적으로 변경되었습니다.\n"
-        bot_client.chat_postMessage(channel=channel_id, text=success_msg)
+        adapter.send_message(text=success_msg)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: google_calendar_updater - 일정 변경 성공!")
         return {"calendar_action_success": True}
 
@@ -645,23 +638,22 @@ def google_calendar_updater(state: AgentState):
         except json.JSONDecodeError:
             print(f"응답 본문 (JSON 아님): {http_err.content.decode('utf-8')}")
         
-        bot_client.chat_postMessage(channel=channel_id, text="일정 변경 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
+        adapter.send_message(text="일정 변경 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
         return {"calendar_action_success": False, "calendar_action_error": str(http_err)}
     except Exception as e:
         error_msg = f"❌ Google Calendar 일정 변경 중 예상치 못한 오류 발생: {e}"
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 변경 중 오류가 발생했습니다: {e}")
+        adapter.send_message(text=f"일정 변경 중 오류가 발생했습니다: {e}")
         return {"calendar_action_success": False, "calendar_action_error": str(e)}
     
 # =============== 일정 삭제 관련 노드 ================ #
-def llm_calendar_deleter_extractor(state: AgentState):
+def llm_calendar_deleter_extractor(state: ScheduleAgentState):
     """
     LLM을 사용하여 '일정 삭제' 의도에서 삭제할 일정의 번호(인덱스)를 추출하는 노드.
     """
     cleaned_message = state.get("cleaned_message")
     found_events = state.get("found_events", [])
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     if cleaned_message is None or not found_events:
         return {"llm_error": "No cleaned message or events for deletion."}
@@ -673,13 +665,14 @@ def llm_calendar_deleter_extractor(state: AgentState):
         event_list_str += f"{i+1}. {event.get('summary', '제목 없음')} (ID: {event.get('id')})\n"
 
     try:
-        prompt = (
-            f"다음 메시지와 제공된 일정 목록을 바탕으로, 삭제하고자 하는 일정의 번호(0부터 시작하는 인덱스)를 JSON 형식으로 추출해줘. "
-            f"일정 목록:\n{event_list_str}"
-            f"메시지: '{cleaned_message}'"
-            f"\n\n응답 형식: "
-            f'{{"event_index": "삭제할 일정의 0부터 시작하는 인덱스"}}'
-        )
+        prompt = f"""
+            다음 메시지와 제공된 일정 목록을 바탕으로, 삭제하고자 하는 일정의 번호(0부터 시작하는 인덱스)를 JSON 형식으로 추출해줘.
+            일정 목록:\n{event_list_str}
+            메시지: '{cleaned_message}'
+
+            \n\n응답 형식: "
+            {{"event_index": "삭제할 일정의 0부터 시작하는 인덱스"}}
+        """
         
         # ChatOpenAI LLM 호출
         response = llm_model.invoke(prompt)
@@ -700,7 +693,7 @@ def llm_calendar_deleter_extractor(state: AgentState):
         try:
             event_index = int(event_index)
         except (ValueError, TypeError):
-            bot_client.chat_postMessage(channel=channel_id, text="일정 번호가 잘못 전달되었습니다. 다시 말해 주세요.")
+            adapter.send_message(text="일정 번호가 잘못 전달되었습니다. 다시 말해 주세요.")
             return {"llm_error": "Invalid event_index type (not an int)."}
 
         # 인덱스 유효성 검사
@@ -709,39 +702,38 @@ def llm_calendar_deleter_extractor(state: AgentState):
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: llm_calendar_deleter_extractor - 삭제할 일정 ID: {target_event_id}")
             return {"target_event_id": target_event_id}
         else:
-            bot_client.chat_postMessage(channel=channel_id, text="선택한 일정 번호가 유효하지 않습니다. 다시 확인해 주세요.")
+            adapter.send_message(text="선택한 일정 번호가 유효하지 않습니다. 다시 확인해 주세요.")
             return {"llm_error": "Invalid event index for deletion."}
 
     except Exception as e:
         print(f"LLM 삭제 정보 추출 중 오류 발생: {e}")
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 삭제 정보를 파악하는 데 실패했습니다: {e}")
+        adapter.send_message(text=f"일정 삭제 정보를 파악하는 데 실패했습니다: {e}")
         return {"llm_error": f"LLM deletion extraction error: {e}"}
 
-def google_calendar_deleter(state: AgentState):
+def google_calendar_deleter(state: ScheduleAgentState):
     """
     Google Calendar의 일정을 삭제하는 노드.
     """
     target_event_id = state.get("target_event_id")
-    channel_id = state["channel_id"]
-    bot_client = state["bot_client"]
+    adapter = state["adapter"]
 
     if not target_event_id:
         error_msg = "일정 삭제에 필요한 정보(이벤트 ID)가 부족합니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
 
     if not TARGET_CALENDAR_ID:
         error_msg = "Error: GOOGLE_CALENDAR_ID 환경 변수가 설정되지 않았습니다. 일정을 삭제할 수 없습니다."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
 
     service = get_google_calendar_service()
     if not service:
         error_msg = "Google Calendar 인증 실패로 일정을 삭제할 수 없습니다. 서버 로그를 확인해주세요."
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=error_msg)
+        adapter.send_message(text=error_msg)
         return {"calendar_action_success": False, "calendar_action_error": error_msg}
 
     try:
@@ -753,7 +745,7 @@ def google_calendar_deleter(state: AgentState):
         ).execute()
 
         success_msg = f"✅ 일정이 성공적으로 삭제되었습니다."
-        bot_client.chat_postMessage(channel=channel_id, text=success_msg)
+        adapter.send_message(text=success_msg)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: google_calendar_deleter - 일정 삭제 성공!")
         return {"calendar_action_success": True}
 
@@ -766,17 +758,17 @@ def google_calendar_deleter(state: AgentState):
         except json.JSONDecodeError:
             print(f"응답 본문 (JSON 아님): {http_err.content.decode('utf-8')}")
         
-        bot_client.chat_postMessage(channel=channel_id, text="일정 삭제 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
+        adapter.send_message(text="일정 삭제 중 오류가 발생했습니다. 서버 로그를 확인해주세요.")
         return {"calendar_action_success": False, "calendar_action_error": str(http_err)}
     except Exception as e:
         error_msg = f"❌ Google Calendar 일정 삭제 중 예상치 못한 오류 발생: {e}"
         print(error_msg)
-        bot_client.chat_postMessage(channel=channel_id, text=f"일정 삭제 중 오류가 발생했습니다: {e}")
+        adapter.send_message(text=f"일정 삭제 중 오류가 발생했습니다: {e}")
         return {"calendar_action_success": False, "calendar_action_error": str(e)}
 
 
 # ============ 조건부 엣지를 위한 라우터 함수 ============ #
-def route_by_intent(state: AgentState):
+def route_by_intent(state: ScheduleAgentState):
     """
     LLM이 분류한 의도(intent)에 따라 다음 노드를 결정하는 라우터.
     """
@@ -794,7 +786,7 @@ def route_by_intent(state: AgentState):
     else: # "unknown" 이거나 다른 의도일 경우
         return "__END__" # 적절한 응답 후 종료
     
-def route_after_search(state: AgentState):
+def route_after_search(state: ScheduleAgentState):
     """
     일정 검색 후 다음 노드를 결정하는 라우터.
     검색된 일정이 없거나, 검색 후 사용자가 어떤 작업을 할지 명확하지 않을 때.
