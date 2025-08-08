@@ -1,0 +1,1 @@
+# adpater/__init__.py
