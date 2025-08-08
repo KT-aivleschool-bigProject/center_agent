@@ -4,12 +4,14 @@ Langgraph Agent 노드 함수 정의
 이 파일은 Langgraph Agent에서 사용하는 각 노드의 비즈니스 로직을 정의합니다.
 각 노드는 ScheduleAgentState를 입력으로 받아 처리 결과를 반환합니다.
 """
-import re
-import json
+
 from datetime import datetime, timedelta
+from rapidfuzz import fuzz
 import os
 import subprocess
 import sys
+import re
+import json
 
 # Google 엑세스 토큰 및 인증 관련 임포트
 from google.auth.transport.requests import Request
@@ -59,6 +61,8 @@ relative_date_guidelines = f"""
 # 현재 FastAPI가 실행 중인 Python 인터프리터 경로를 그대로 이용
 current_python = sys.executable
 
+# 의미 없는 키워드 목록
+IGNORED_KEYWORDS = ["일정", "정보", "내역", "내용", "약속"]
 
 def run_google_auth_setup():
     """
@@ -197,6 +201,11 @@ def llm_intent_classifier(state: ScheduleAgentState):
         intent = intent_info.get('intent', 'unknown')
         query = intent_info.get('query', '')
         date = intent_info.get('date', '')
+
+        # 의미 없는 일반 검색어는 무시
+        if query in IGNORED_KEYWORDS:
+            print(f"[필터링] 무의미한 검색어('{query}') → 빈 문자열로 처리됨")
+            query = ''
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 노드: llm_intent_classifier - 의도: {intent}, 쿼리: {query}, 날짜: {date}")
         return {"intent": intent, "search_query": query, "search_date": date}
@@ -426,16 +435,24 @@ def google_calendar_searcher(state: ScheduleAgentState):
             calendarId=TARGET_CALENDAR_ID,
             timeMin=time_min, # 수정된 timeMin 사용
             timeMax=time_max, # 수정된 timeMax 사용
-            q=search_query, # 검색 키워드
             singleEvents=True,
             orderBy='startTime'
         ).execute()
-        events_result = events_page.get('items', [])
+        all_events = events_page.get('items', [])
+
+        # search_query가 있을 경우 유사도 필터링 적용
+        if search_query and search_query not in IGNORED_KEYWORDS:
+            events_result = [
+                event for event in all_events
+                if fuzz.partial_ratio(search_query, event.get("summary", "")) >= 60
+            ]
+        else:
+            events_result = all_events
 
         if not events_result:
             adapter.send_message(text="검색된 일정이 없습니다. 검색어 또는 날짜를 확인해주세요.")
             return {"found_events": [], "calendar_action_error": "No events found."}
-        
+                
         response_text = "검색된 일정이 있습니다:\n"
         for i, event in enumerate(events_result):
             start = event['start'].get('dateTime', event['start'].get('date'))
