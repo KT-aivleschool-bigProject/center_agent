@@ -44,7 +44,8 @@ def authenticate_google_calendar():
 
             with open(TOKEN_PATH, 'w') as token:
                 token.write(creds.to_json())
-            print("OAuth 인증 완료 및 token.json 저장 완료.") 
+            print("OAuth 인증 완료 및 token.json 저장 완료.")
+            return True 
         except Exception as e:
             print(f"[ERROR] OAuth 인증 중 오류 발생: {e}")
             return False
@@ -56,9 +57,8 @@ if __name__ == '__main__':
     print("="*50)
     print()
 
-    authenticate_google_calendar()
-
-    print()
-    print("="*50)
-    print("인증 설정이 완료되었습니다.")
-    print("이제 main.py를 실행하여 Google Calendar에 일정을 추가할 수 있습니다.")
+    if authenticate_google_calendar():
+        print()
+        print("="*50)
+        print("인증 설정이 완료되었습니다.")
+        print("이제 main.py를 실행하여 Google Calendar에 일정을 추가할 수 있습니다.")

@@ -105,6 +105,7 @@ python-docx>=0.8.11
 python-dotenv==1.0.0
 python-multipart==0.0.6
 PyYAML==6.0.2
+RapidFuzz==3.13.0
 regex==2025.7.34
 requests==2.31.0 
 requests-oauthlib==2.0.0
