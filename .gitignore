@@ -18,6 +18,10 @@ venv/
 
 # Build outputs
 dist/
+# Data & DB
+ai-server/data/vector_db/chroma.sqlite3
+ai-server/data/vector_db/ce8d434c-8312-4aca-83eb-a39b5bad63d6/
+ai-server/data/vector_db/**/*.bin
 build/
 *.egg-info/
 
