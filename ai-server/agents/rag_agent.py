@@ -46,9 +46,10 @@ class RAGAgent:
             length_function=len,
         )
         
-        # 문서 저장 경로
-        self.docs_path = Path("data/docs")
-        self.vector_db_path = Path("data/vector_db")
+        # 문서 저장 경로 (프로젝트 루트의 data 폴더)
+        project_root = Path(__file__).parent.parent.parent.parent
+        self.docs_path = project_root / "data" / "docs"
+        self.vector_db_path = project_root / "data" / "vector_db"
         
         # 초기화
         self._initialize_components()
@@ -69,7 +70,7 @@ class RAGAgent:
             
             # LLM 초기화
             self.llm = ChatOpenAI(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 temperature=0.3,
                 api_key=api_key
             )
@@ -285,7 +286,7 @@ class RAGAgent:
             if not self.vectorstore:
                 state["error"] = "벡터 저장소가 초기화되지 않았습니다. 문서를 먼저 로딩해주세요."
                 print(" 벡터 저장소가 없습니다. 문서 로딩을 다시 시도합니다.")
-                await self._load_test_documents()  # 문서 재로딩 시도
+                await self._load_documents()  # 문서 재로딩 시도
                 if not self.vectorstore:
                     return state
             
