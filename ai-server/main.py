@@ -33,6 +33,10 @@ if not openai.api_key:
         "⚠️  OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 설정해주세요."
     )
 
+SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN') # Slack 봇 토큰 (xoxb- 로 시작)
+SLACK_APP_TOKEN = os.getenv('SLACK_APP_TOKEN') # Slack 앱 토큰 (xapp- 로 시작, Socket Mode에 필요)
+SIGNING_SECRET = os.getenv('SLACK_SIGNING_SECRET') # Slack 이벤트 서명 검증을 위한 시크릿
+
 @asynccontextmanager
 async def lifespan_slack_service(app: FastAPI):
     """FastAPI 서버 시작 시 Slack Agent를 백그라운드 스레드에서 실행"""   
@@ -41,9 +45,12 @@ async def lifespan_slack_service(app: FastAPI):
 
     try:
         # Thread로 slack_app 실행
-        slack_thread = Thread(target=slack_app.run_slack_bot, daemon=True)
-        slack_thread.start()
-        print("✅ Slack Agent를 백그라운드 스레드에서 실행했습니다.")
+        if all([SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SIGNING_SECRET]):
+            slack_thread = Thread(target=slack_app.run_slack_bot, daemon=True)
+            slack_thread.start()
+            print("✅ Slack Agent를 백그라운드 스레드에서 실행했습니다.")
+        else:
+            print("ℹ️ Slack 토큰 미설정: Slack Agent는 시작하지 않습니다.")
     except Exception as e:
         print(f"❌ Slack Agent 실행 중 오류 발생: {e}")
 
@@ -59,10 +66,11 @@ app = FastAPI(
 # CORS 설정 (React 앱과 통신을 위해)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8002"],  # React 개발 서버
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8002", "http://127.0.0.1:3000"],  # React 개발 서버
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
 )
 
 
@@ -229,13 +237,19 @@ rag_agent = RAGAgent()
 
 
 # ================ FastAPI 엔드포인트 설정 ================ #
-@app.get("/")
+@app.get("/", tags=["Root"])
 async def root():
+    """
+    서버의 루트 엔드포인트입니다.
+    """
     return {"message": "팀 에이전트 시스템 AI 서버가 실행 중입니다."}
 
 
-@app.get("/health")
+@app.get("/health", tags=["Monitoring"])
 async def health_check():
+    """
+    서버의 상태를 확인합니다.
+    """
     return {
         "status": "healthy",
         "agents": ["manager", "code", "document", "schedule", "rag"],
@@ -243,7 +257,19 @@ async def health_check():
     }
 
 
-@app.post("/ai/process", response_model=ChatResponse)
+@app.post("/ai/process",
+    response_model=ChatResponse,
+    summary = "사용자 메시지를 처리하고 적절한 에이전트를 호출합니다.",
+    description="""
+    관리자 에이전트가 사용자 메시지를 분석하여 가장 적합한 전문 에이전트에게
+    처리를 위임합니다.
+    
+    **요청 본문**:
+    - `message`: 사용자의 채팅 메시지
+    - `user_id`: 사용자 ID (선택사항)
+    """,
+    tags=["AI Agents"],
+)
 async def process_chat(chat_message: ChatMessage):
     """사용자 메시지를 처리하고 적절한 에이전트를 호출"""
     import time
@@ -307,7 +333,14 @@ async def process_chat(chat_message: ChatMessage):
         )
 
 
-@app.post("/ai/agents/{agent_type}")
+@app.post("/ai/agents/{agent_type}",
+    summary="특정 에이전트를 직접 호출합니다.",
+    description="""
+    관리자 에이전트의 분석 없이 특정 전문 에이전트를 직접 호출합니다.
+    에이전트 타입은 URL 경로에 포함됩니다.
+    """,
+    tags=["AI Agents"],
+)
 async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
     """특정 에이전트를 직접 호출"""
     try:
@@ -353,7 +386,14 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
         )
 
 
-@app.post("/ai/rag/add-documents")
+@app.post("/ai/rag/add-documents",
+    summary="RAG Agent에 새 문서를 추가합니다.",
+    description="""
+    RAG(Retrieval-Augmented Generation) 시스템에 문서 경로 목록을 제공하여
+    새로운 지식 기반을 구축합니다.
+    """,
+    tags=["RAG Agent"],
+    )
 async def add_documents_to_rag(file_paths: List[str]):
     """RAG Agent에 새 문서 추가"""
     try:
