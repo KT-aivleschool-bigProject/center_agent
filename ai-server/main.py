@@ -94,7 +94,7 @@ class ManagerAgent:
 사용자의 요청을 분석하고 적절한 전문 에이전트를 선택해야 합니다.
 
 사용 가능한 에이전트:
-1. Code Agent: 코드 리뷰, 버그 탐지, 코드 품질 개선, Git 관리
+1. Code Agent: 코드 리뷰, PR 요약 및 리뷰, 코드 품질 개선, github에서 관련 기능 코드 찾기
 2. Document Agent: 문서 작성, 편집, 검색, API 문서 생성
 3. Schedule Agent: 프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배
 4. RAG Agent: 문서 검색 및 지식 기반 질문 답변

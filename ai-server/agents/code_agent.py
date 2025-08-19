@@ -3,7 +3,6 @@ import requests
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-import langgraph
 from langgraph.graph import StateGraph, END
 import json
 import re
@@ -29,7 +28,10 @@ def classify_prompt(user_prompt: str) -> str:
         [
             (
                 "system",
-                "당신은 분류기입니다. 사용자의 요청이 코드에서 특정 기능을 찾는 요청이면 'find_code', PR 요약 요청이면 'pr_summary', 코드 리뷰/설명이면 'code_review', 그 외는 'other'로만 답하세요. 반드시 json으로 {{\"type\": \"...\"}} 형식으로 답하세요.",
+                """당신은 분류기입니다. 
+                사용자의 요청이 코드에서 특정 기능을 찾는 요청이면 'find_code', 
+                PR 요약 요청이면 'pr_summary', 코드 리뷰/설명이면 'code_review', 
+                그 외는 'other'로만 답하세요. 반드시 json으로 {{\"type\": \"...\"}} 형식으로 답하세요.""",
             ),
             ("human", "{user_prompt}"),
         ]
@@ -65,7 +67,7 @@ def extract_feature_from_prompt(prompt: str) -> str:
     llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, temperature=0)
     chain = feature_prompt | llm
     result = chain.invoke({"user_prompt": prompt})
-    import json
+
 
     try:
         json_str = extract_json_from_codeblock(result.content)
