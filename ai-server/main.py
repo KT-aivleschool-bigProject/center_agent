@@ -1,9 +1,3 @@
-# main.py
-"""
-팀 에이전트 시스템의 AI 서버 메인 파일
-이 파일은 FastAPI를 사용하여 AI 서버를 실행합니다.
-"""
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,6 +13,7 @@ import json
 # 필요한 에이전트 클래스 임포트
 from agents import CodeAgent
 from agents.rag_agent import RAGAgent
+from agents.security_agent import SecurityAgent
 from agents.schedule.schedule_agent import ScheduleAgent
 from agents.schedule.adapter.web_adapter import WebAdapter
 from agents.schedule import slack_app
@@ -94,6 +89,21 @@ class ChatResponse(BaseModel):
     processing_time: float
 
 
+class SecurityAnalysisRequest(BaseModel):
+    code: str
+    language: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class SecurityAnalysisResponse(BaseModel):
+    language: str
+    risk_score: float
+    is_vulnerable: bool
+    threshold: float
+    findings: List[dict]
+    proposed_fix: Optional[dict]
+
+
 # 에이전트 클래스들
 class ManagerAgent:
     def __init__(self):
@@ -102,14 +112,15 @@ class ManagerAgent:
 사용자의 요청을 분석하고 적절한 전문 에이전트를 선택해야 합니다.
 
 사용 가능한 에이전트:
-1. Code Agent: 코드 리뷰, PR 요약 및 리뷰, 코드 품질 개선, github에서 관련 기능 코드 찾기
-2. Document Agent: 문서 작성, 편집, 검색, API 문서 생성
-3. Schedule Agent: 프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배
-4. RAG Agent: 문서 검색 및 지식 기반 질문 답변
+1. Code Agent: 코드 리뷰, 버그 탐지, 코드 품질 개선, Git 관리
+2. Security Agent: 코드 보안 취약점 분석, 정적 분석, 수정 제안
+3. Document Agent: 문서 작성, 편집, 검색, API 문서 생성
+4. Schedule Agent: 프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배
+5. RAG Agent: 문서 검색 및 지식 기반 질문 답변
 
 응답 형식:
 {
-    "selected_agent": "code|document|schedule|rag|general",
+    "selected_agent": "code|security|document|schedule|rag|general",
     "reason": "선택 이유",
     "confidence": 0.0-1.0
 }"""
@@ -153,6 +164,15 @@ class ManagerAgent:
                 "selected_agent": "code",
                 "reason": "코드 관련 요청 감지",
                 "confidence": 0.8,
+            }
+        elif any(
+            word in message_lower
+            for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security"]
+        ):
+            return {
+                "selected_agent": "security",
+                "reason": "보안 분석 요청 감지",
+                "confidence": 0.9,
             }
         elif any(
             word in message_lower
@@ -232,6 +252,7 @@ class DocumentAgent:
 manager_agent = ManagerAgent()
 code_agent = CodeAgent()
 document_agent = DocumentAgent()
+security_agent = SecurityAgent()
 web_schedule_agent = ScheduleAgent(channel="web")  # 웹 채널용 ScheduleAgent
 rag_agent = RAGAgent()
 
@@ -364,6 +385,21 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
             response = await web_adapter.get_response() # WebAdapter에 저장된 응답 가져오기
         elif agent_type == "rag":
             response = await rag_agent.process(chat_message.message)
+        elif agent_type == "security":
+            # Security Agent는 코드 분석이므로 메시지를 코드로 간주
+            analysis_request = {
+                "code": chat_message.message,
+                "metadata": {"threshold": 0.6}
+            }
+            result = security_agent.analyze(analysis_request)
+            response = f"보안 분석 결과:\n"
+            response += f"언어: {result['language']}\n"
+            response += f"위험도: {result['risk_score']}%\n"
+            response += f"취약성 여부: {'예' if result['is_vulnerable'] else '아니오'}\n"
+            if result['findings']:
+                response += f"발견된 문제: {len(result['findings'])}개\n"
+            if result['proposed_fix']:
+                response += f"수정 제안: {result['proposed_fix']['strategy']}"
         elif agent_type == "manager":
             analysis = await manager_agent.analyze_prompt(chat_message.message)
             response = (
@@ -383,6 +419,28 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"에이전트 호출 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+@app.post("/ai/security/analyze", response_model=SecurityAnalysisResponse)
+async def analyze_security(request: SecurityAnalysisRequest):
+    """코드 보안 분석 전용 엔드포인트"""
+    try:
+        # 요청 데이터 구성
+        input_data = {
+            "code": request.code,
+            "language": request.language,
+            "metadata": request.metadata or {"threshold": 0.6}
+        }
+        
+        # Security Agent로 분석 실행
+        result = security_agent.analyze(input_data)
+        
+        return SecurityAnalysisResponse(**result)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"보안 분석 중 오류가 발생했습니다: {str(e)}"
         )
 
 
@@ -408,4 +466,4 @@ async def add_documents_to_rag(file_paths: List[str]):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8003)
+    uvicorn.run(app, host="0.0.0.0", port=8005)
