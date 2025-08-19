@@ -46,10 +46,9 @@ class RAGAgent:
             length_function=len,
         )
         
-        # 문서 저장 경로 (프로젝트 루트의 data 폴더)
-        project_root = Path(__file__).parent.parent.parent.parent
-        self.docs_path = project_root / "data" / "docs"
-        self.vector_db_path = project_root / "data" / "vector_db"
+        # 문서 저장 경로
+        self.docs_path = Path("data/docs")
+        self.vector_db_path = Path("data/vector_db")
         
         # 초기화
         self._initialize_components()
@@ -64,7 +63,6 @@ class RAGAgent:
             # OpenAI API 키 확인
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
-                print("  RAG Agent: OpenAI API 키가 설정되지 않았습니다.")
                 print("  RAG Agent: OpenAI API 키가 설정되지 않았습니다.")
                 return
             
@@ -102,7 +100,6 @@ class RAGAgent:
             print(" RAG Agent 구성 요소가 초기화되었습니다.")
             
         except Exception as e:
-            print(f" RAG Agent 초기화 오류: {e}")
             print(f" RAG Agent 초기화 오류: {e}")
     
     def _setup_graph(self):
@@ -143,7 +140,6 @@ class RAGAgent:
         try:
             if not self.embeddings:
                 print("  임베딩 모델이 초기화되지 않았습니다.")
-                print("  임베딩 모델이 초기화되지 않았습니다.")
                 return
             
             documents = []
@@ -159,9 +155,7 @@ class RAGAgent:
                         )
                         documents.append(doc)
                         print(f" 로딩 완료: {txt_file.name}")
-                        print(f" 로딩 완료: {txt_file.name}")
                 except Exception as e:
-                    print(f" {txt_file.name} 로딩 실패: {e}")
                     print(f" {txt_file.name} 로딩 실패: {e}")
             
             # PDF 파일 로딩
@@ -181,7 +175,6 @@ class RAGAgent:
                     loader = UnstructuredWordDocumentLoader(str(docx_file))
                     docs = loader.load()
                     documents.extend(docs)
-                    print(f" DOCX 로딩 완료: {docx_file.name}")
                     print(f" DOCX 로딩 완료: {docx_file.name}")
                 except Exception as e:
                     print(f" DOCX {docx_file.name} 로딩 실패: {e}")
