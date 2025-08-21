@@ -2,13 +2,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from threading import Thread
 import asyncio
 import os
 from dotenv import load_dotenv
 import openai
 import json
+import uuid
+from datetime import datetime
 
 # 필요한 에이전트 클래스 임포트
 from agents import CodeAgent
@@ -18,8 +20,16 @@ from agents.schedule.schedule_agent import ScheduleAgent
 from agents.schedule.adapter.web_adapter import WebAdapter
 from agents.schedule import slack_app
 
+# 멀티에이전트 오케스트레이션 관련 임포트
+from shared.types import UserRequest, AgentResult, ApprovalRequest, AgentName
+from shared.state import GraphState
+from graph.app import orchestrator
+
 # 환경변수 로드
 load_dotenv()
+
+# OpenMP 충돌 해결
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # OpenAI API 설정
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -463,7 +473,185 @@ async def add_documents_to_rag(file_paths: List[str]):
         )
 
 
+# ========== 멀티에이전트 오케스트레이션 엔드포인트 ==========
+
+# Pydantic 모델들 (멀티에이전트)
+class AgentRunRequest(BaseModel):
+    message: str
+    user_id: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None
+
+
+class AgentRunResponse(BaseModel):
+    session_id: str
+    success: bool
+    message: str
+    agent_results: List[Dict[str, Any]]
+    approval_required: bool = False
+    approval_request: Optional[Dict[str, Any]] = None
+    total_processing_time: float
+
+
+class ApprovalActionRequest(BaseModel):
+    session_id: str
+    action: str  # "approve" or "reject"
+    comment: Optional[str] = None
+
+
+# 세션 저장소 (실제 환경에서는 Redis 등 사용)
+active_sessions: Dict[str, GraphState] = {}
+
+
+@app.post("/agent/run",
+    summary="멀티에이전트 워크플로우 실행",
+    description="사용자 요청을 분석하여 적절한 에이전트들을 순차적으로 실행합니다.",
+    tags=["Multi-Agent Orchestration"],
+    response_model=AgentRunResponse
+)
+async def run_multi_agent_workflow(request: AgentRunRequest) -> AgentRunResponse:
+    """멀티에이전트 워크플로우 실행"""
+    start_time = datetime.now()
+    session_id = request.session_id or str(uuid.uuid4())
+    
+    try:
+        # 초기 GraphState 생성
+        initial_state: GraphState = {
+            "user_request": UserRequest(
+                message=request.message,
+                user_id=request.user_id,
+                context=request.data or {}
+            ),
+            "session_id": session_id,
+            "agent_results": [],
+            "current_agent": None,
+            "next_agent": None,
+            "approval_status": "not_required",
+            "approval_pending": False,
+            "approval_request": None
+        }
+        
+        # 오케스트레이터 실행
+        final_state = await orchestrator.run(initial_state)
+        
+        # 세션 저장 (승인이 필요한 경우)
+        if final_state.get("approval_pending", False):
+            active_sessions[session_id] = final_state
+        
+        # 응답 생성
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return AgentRunResponse(
+            session_id=session_id,
+            success=not bool(final_state.get("error")),
+            message=final_state.get("error", "Workflow completed successfully"),
+            agent_results=[result.model_dump() for result in final_state["agent_results"]],
+            approval_required=final_state.get("approval_pending", False),
+            approval_request=final_state.get("approval_request").model_dump() if final_state.get("approval_request") else None,
+            total_processing_time=processing_time
+        )
+        
+    except Exception as e:
+        return AgentRunResponse(
+            session_id=session_id,
+            success=False,
+            message=f"Workflow execution failed: {str(e)}",
+            agent_results=[],
+            approval_required=False,
+            total_processing_time=(datetime.now() - start_time).total_seconds()
+        )
+
+
+@app.post("/agent/approve",
+    summary="에이전트 액션 승인/거부",
+    description="승인이 필요한 에이전트 액션에 대해 승인 또는 거부 처리를 합니다.",
+    tags=["Multi-Agent Orchestration"]
+)
+async def handle_agent_approval(request: ApprovalActionRequest):
+    """에이전트 액션 승인/거부 처리"""
+    
+    try:
+        # 세션 확인
+        if request.session_id not in active_sessions:
+            raise HTTPException(
+                status_code=404, 
+                detail="Session not found or already processed"
+            )
+        
+        state = active_sessions[request.session_id]
+        
+        # 승인 상태 업데이트
+        if request.action == "approve":
+            state["approval_status"] = "approved"
+        elif request.action == "reject":
+            state["approval_status"] = "rejected"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid action. Must be 'approve' or 'reject'"
+            )
+        
+        state["approval_pending"] = False
+        
+        # 승인/거부 결과를 에이전트 결과에 추가
+        approval_result = AgentResult(
+            agent_name=AgentName.MANAGER,
+            success=True,
+            message=f"Action {request.action}d by user" + (f": {request.comment}" if request.comment else ""),
+            data={
+                "action": request.action,
+                "comment": request.comment,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+        state["agent_results"].append(approval_result)
+        
+        # 세션 정리
+        del active_sessions[request.session_id]
+        
+        return {
+            "session_id": request.session_id,
+            "action": request.action,
+            "status": "processed",
+            "message": f"Action successfully {request.action}d"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Approval processing failed: {str(e)}"
+        )
+
+
+@app.get("/agent/sessions",
+    summary="활성 세션 목록 조회",
+    description="승인 대기 중인 활성 세션들의 목록을 조회합니다.",
+    tags=["Multi-Agent Orchestration"]
+)
+async def get_active_sessions():
+    """활성 세션 목록 조회"""
+    
+    sessions = []
+    for session_id, state in active_sessions.items():
+        if state.get("approval_pending", False):
+            approval_request = state.get("approval_request")
+            sessions.append({
+                "session_id": session_id,
+                "user_request": state["user_request"].model_dump(),
+                "agent_results": [result.model_dump() for result in state["agent_results"]],
+                "approval_request": approval_request.model_dump() if approval_request else None,
+                "created_at": state.get("created_at", "unknown")
+            })
+    
+    return {
+        "active_sessions": sessions,
+        "total_count": len(sessions)
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8005)
+    uvicorn.run(app, host="0.0.0.0", port=8006)
