@@ -60,9 +60,17 @@ class RAGAgent:
             length_function=len,
         )
         
-        # 문서 저장 경로
-        self.docs_path = Path("data/docs")
-        self.vector_db_path = Path("data/vector_db")
+        # 문서 저장 경로 (절대 경로로 설정)
+        current_dir = Path(__file__).parent.parent  # ai-server 디렉토리
+        self.docs_path = current_dir / "data" / "docs"
+        self.vector_db_path = current_dir / "data" / "vector_db"
+        
+        # 디렉토리 생성
+        self.docs_path.mkdir(parents=True, exist_ok=True)
+        self.vector_db_path.mkdir(parents=True, exist_ok=True)
+        
+        print(f"📁 RAG Agent 문서 경로: {self.docs_path}")
+        print(f"📁 RAG Agent 벡터DB 경로: {self.vector_db_path}")
         
         # 지원하는 파일 형식
         self.supported_extensions = {
@@ -151,91 +159,114 @@ class RAGAgent:
     async def _load_documents(self):
         """문서 디렉토리에서 실제 문서들을 로딩"""
         try:
-            # 문서 디렉토리 생성 (존재하지 않을 경우)
-            self.docs_path.mkdir(parents=True, exist_ok=True)
+            print(f"📚 문서 로딩 시작: {self.docs_path}")
+            
+            # 경로 존재 확인
+            if not self.docs_path.exists():
+                print(f"❌ 문서 경로가 존재하지 않습니다: {self.docs_path}")
+                return
+            
+            # 디렉토리 내 파일 목록 확인
+            all_files = list(self.docs_path.iterdir())
+            print(f"📄 발견된 파일들: {[f.name for f in all_files]}")
             
             # 문서 로딩 및 벡터화
             await self._load_and_vectorize_documents()
             
         except Exception as e:
-            print(f" 테스트 문서 로딩 오류: {e}")
+            print(f"❌ 문서 로딩 오류: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def _load_and_vectorize_documents(self):
         """문서를 로딩하고 벡터화하여 저장"""
         try:
             if not self.embeddings:
-                print("  임베딩 모델이 초기화되지 않았습니다.")
+                print("❌ 임베딩 모델이 초기화되지 않았습니다.")
                 return
             
             documents = []
+            print(f"🔍 문서 검색 경로: {self.docs_path}")
             
             # 텍스트 파일 직접 로딩
-            for txt_file in self.docs_path.glob("*.txt"):
+            txt_files = list(self.docs_path.glob("*.txt"))
+            print(f"📝 텍스트 파일 발견: {[f.name for f in txt_files]}")
+            
+            for txt_file in txt_files:
                 try:
                     with open(txt_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        doc = Document(
-                            page_content=content,
-                            metadata={"source": str(txt_file)}
-                        )
-                        documents.append(doc)
-                        print(f" 로딩 완료: {txt_file.name}")
+                        content = f.read().strip()
+                        if content:  # 빈 파일 체크
+                            doc = Document(
+                                page_content=content,
+                                metadata={"source": str(txt_file), "filename": txt_file.name}
+                            )
+                            documents.append(doc)
+                            print(f"✅ 로딩 완료: {txt_file.name} ({len(content)} 문자)")
+                        else:
+                            print(f"⚠️ 빈 파일 스킵: {txt_file.name}")
                 except Exception as e:
-                    print(f" {txt_file.name} 로딩 실패: {e}")
+                    print(f"❌ {txt_file.name} 로딩 실패: {e}")
             
             # PDF 파일 로딩
-            for pdf_file in self.docs_path.glob("*.pdf"):
+            pdf_files = list(self.docs_path.glob("*.pdf"))
+            print(f"📄 PDF 파일 발견: {[f.name for f in pdf_files]}")
+            
+            for pdf_file in pdf_files:
                 try:
                     loader = PyPDFLoader(str(pdf_file))
                     docs = loader.load()
                     documents.extend(docs)
-                    print(f" PDF 로딩 완료: {pdf_file.name}")
-                    print(f" PDF 로딩 완료: {pdf_file.name}")
+                    print(f"✅ PDF 로딩 완료: {pdf_file.name}")
                 except Exception as e:
-                    print(f" PDF {pdf_file.name} 로딩 실패: {e}")
+                    print(f"❌ PDF {pdf_file.name} 로딩 실패: {e}")
 
             # DOCX 파일 로딩
-            for docx_file in self.docs_path.glob("*.docx"):
+            docx_files = list(self.docs_path.glob("*.docx"))
+            print(f"📄 DOCX 파일 발견: {[f.name for f in docx_files]}")
+            
+            for docx_file in docx_files:
                 try:
                     loader = UnstructuredWordDocumentLoader(str(docx_file))
                     docs = loader.load()
                     documents.extend(docs)
-                    print(f" DOCX 로딩 완료: {docx_file.name}")
+                    print(f"✅ DOCX 로딩 완료: {docx_file.name}")
                 except Exception as e:
-                    print(f" DOCX {docx_file.name} 로딩 실패: {e}")
+                    print(f"❌ DOCX {docx_file.name} 로딩 실패: {e}")
 
+            print(f"📊 총 로딩된 문서: {len(documents)}개")
+            
             if documents:
                 # 문서 분할
                 texts = self.text_splitter.split_documents(documents)
-                print(f" {len(documents)}개 문서를 {len(texts)}개 청크로 분할했습니다.")
-                print(f" {len(documents)}개 문서를 {len(texts)}개 청크로 분할했습니다.")
+                print(f"✂️ {len(documents)}개 문서를 {len(texts)}개 청크로 분할했습니다.")
                 
                 # 벡터 저장소 생성/업데이트
                 if self.vectorstore is None:
+                    print("🆕 새로운 FAISS 벡터 저장소 생성 중...")
                     self.vectorstore = FAISS.from_documents(
                         documents=texts,
                         embedding=self.embeddings
                     )
                     # FAISS 인덱스 저장
                     self.vectorstore.save_local(str(self.vector_db_path))
-                    print(" 새로운 FAISS 벡터 저장소를 생성했습니다.")
+                    print("✅ 새로운 FAISS 벡터 저장소를 생성했습니다.")
                 else:
+                    print("📝 기존 벡터 저장소에 문서 추가 중...")
                     self.vectorstore.add_documents(texts)
                     # FAISS 인덱스 저장
                     self.vectorstore.save_local(str(self.vector_db_path))
-                    print(" 기존 FAISS 벡터 저장소에 문서를 추가했습니다.")
+                    print("✅ 기존 FAISS 벡터 저장소에 문서를 추가했습니다.")
                 
                 # RetrievalQA 체인 설정
                 self._setup_retrieval_qa()
                 
-                print(f" 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
-                print(f" 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
+                print(f"🎉 벡터화 완료: {len(documents)}개 문서, {len(texts)}개 텍스트 청크")
             else:
-                print("  로딩할 수 있는 문서가 없습니다.")
+                print("⚠️ 로딩할 수 있는 문서가 없습니다.")
                 
         except Exception as e:
-            print(f" 문서 벡터화 오류: {e}")
-            print(f" 문서 벡터화 오류: {e}")
+            print(f"❌ 문서 벡터화 오류: {e}")
             import traceback
             traceback.print_exc()
     

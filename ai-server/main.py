@@ -154,6 +154,15 @@ class ManagerAgent:
 
     async def analyze_prompt(self, message: str) -> dict:
         """사용자 프롬프트를 분석하고 적절한 에이전트를 선택"""
+        # 보안 관련 키워드가 있으면 우선적으로 security agent 선택
+        message_lower = message.lower()
+        if any(word in message_lower for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security", "분석해줘"]):
+            return {
+                "selected_agent": "security",
+                "reason": "보안 분석 요청 감지",
+                "confidence": 0.95,
+            }
+        
         if not openai.api_key:
             # API 키가 없을 때는 키워드 기반 분석
             return self._fallback_analysis(message)
@@ -171,7 +180,15 @@ class ManagerAgent:
 
             result = response.choices[0].message.content
             try:
-                return json.loads(result)
+                parsed_result = json.loads(result)
+                # 보안 관련 키워드가 있는데 security가 선택되지 않았다면 강제로 security 선택
+                if any(word in message_lower for word in ["보안", "취약점", "분석해줘", "security"]) and parsed_result.get("selected_agent") != "security":
+                    return {
+                        "selected_agent": "security",
+                        "reason": "보안 분석 요청 감지 (강제 선택)",
+                        "confidence": 0.9,
+                    }
+                return parsed_result
             except:
                 return self._fallback_analysis(message)
 
@@ -183,23 +200,25 @@ class ManagerAgent:
         """API 키가 없을 때 사용하는 키워드 기반 분석"""
         message_lower = message.lower()
 
+        # 보안 관련 키워드를 먼저 체크 (우선순위 높음)
         if any(
             word in message_lower
-            for word in ["코드", "버그", "리뷰", "개발", "git", "repository"]
-        ):
-            return {
-                "selected_agent": "code",
-                "reason": "코드 관련 요청 감지",
-                "confidence": 0.8,
-            }
-        elif any(
-            word in message_lower
-            for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security"]
+            for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security", 
+                        "분석해줘", "검사해줘", "체크해줘", "sql", "injection", "xss"]
         ):
             return {
                 "selected_agent": "security",
                 "reason": "보안 분석 요청 감지",
                 "confidence": 0.9,
+            }
+        elif any(
+            word in message_lower
+            for word in ["코드", "버그", "리뷰", "개발", "git", "repository", "function", "login"]
+        ):
+            return {
+                "selected_agent": "code",
+                "reason": "코드 관련 요청 감지",
+                "confidence": 0.8,
             }
         elif any(
             word in message_lower
@@ -358,6 +377,41 @@ async def process_chat(chat_message: ChatMessage):
         elif selected_agent == "rag":
             response = await rag_agent.process(chat_message.message)
             agents_used.append("rag")
+        elif selected_agent == "security":
+            # Security Agent는 코드 분석이므로 메시지를 코드로 간주
+            analysis_request = {
+                "code": chat_message.message,
+                "metadata": {"threshold": 0.6}
+            }
+            result = security_agent.analyze(analysis_request)
+            response = f"🔒 **보안 분석 결과**\n\n"
+            response += f"📋 **언어**: {result['language']}\n"
+            response += f"⚠️ **위험도**: {result['risk_score']}%\n"
+            response += f"🚨 **취약성 여부**: {'예' if result['is_vulnerable'] else '아니오'}\n\n"
+            
+            if result['findings']:
+                response += f"🔍 **발견된 보안 문제** ({len(result['findings'])}개):\n"
+                for i, finding in enumerate(result['findings'], 1):
+                    # finding['detail']에서 제목과 설명 분리
+                    detail = finding['detail']
+                    if ':' in detail:
+                        title, desc = detail.split(':', 1)
+                        response += f"  **{i}. {title.strip()}**\n"
+                        response += f"     └ {desc.strip()}\n\n"
+                    else:
+                        response += f"  **{i}. {detail}**\n\n"
+                
+            if result['proposed_fix']:
+                response += f"💡 **수정 제안**:\n{result['proposed_fix']['strategy']}\n"
+                if result['proposed_fix'].get('code'):
+                    response += f"\n```\n{result['proposed_fix']['code']}\n```"
+            else:
+                response += f"💡 **권장사항**:\n"
+                response += f"• 입력 데이터 검증 및 필터링 강화\n"
+                response += f"• 안전한 함수/라이브러리 사용\n"
+                response += f"• 정기적인 보안 코드 리뷰 실시"
+            
+            agents_used.append("security")
         else:
             # 일반적인 대화는 모든 에이전트의 도움을 받아 응답
             response = f"안녕하세요! '{chat_message.message}'에 대한 응답입니다.\n\n"
