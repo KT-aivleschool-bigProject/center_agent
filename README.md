@@ -24,7 +24,6 @@ ai-server 안에 env.example 을 .env로 바꾸고 본인 오픈API 키를 넣�
 
 ### 💻 코드관리 Agent (Code Agent)
 - 코드 리뷰 및 분석
-- 버그 탐지 및 수정 제안
 - 코드 품질 개선
 - Git 저장소 관리
 
