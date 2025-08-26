@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 import openai
 import json
+import re  # Added for regex in _fallback_analysis
 
 # 필요한 에이전트 클래스 임포트
 from agents import CodeAgent
@@ -28,13 +29,18 @@ if not openai.api_key:
         "⚠️  OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 설정해주세요."
     )
 
-SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN') # Slack 봇 토큰 (xoxb- 로 시작)
-SLACK_APP_TOKEN = os.getenv('SLACK_APP_TOKEN') # Slack 앱 토큰 (xapp- 로 시작, Socket Mode에 필요)
-SIGNING_SECRET = os.getenv('SLACK_SIGNING_SECRET') # Slack 이벤트 서명 검증을 위한 시크릿
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")  # Slack 봇 토큰 (xoxb- 로 시작)
+SLACK_APP_TOKEN = os.getenv(
+    "SLACK_APP_TOKEN"
+)  # Slack 앱 토큰 (xapp- 로 시작, Socket Mode에 필요)
+SIGNING_SECRET = os.getenv(
+    "SLACK_SIGNING_SECRET"
+)  # Slack 이벤트 서명 검증을 위한 시크릿
+
 
 @asynccontextmanager
 async def lifespan_slack_service(app: FastAPI):
-    """FastAPI 서버 시작 시 Slack Agent를 백그라운드 스레드에서 실행"""   
+    """FastAPI 서버 시작 시 Slack Agent를 백그라운드 스레드에서 실행"""
     # 현재 파일 경로 기준으로 ai-server 디렉토리로 이동
     # ai_server_path = os.path.dirname(__file__)
 
@@ -49,7 +55,8 @@ async def lifespan_slack_service(app: FastAPI):
     except Exception as e:
         print(f"❌ Slack Agent 실행 중 오류 발생: {e}")
 
-    yield   # FastAPI 서버가 실행되는 동안 이 부분이 유지됩니다.
+    yield  # FastAPI 서버가 실행되는 동안 이 부분이 유지됩니다.
+
 
 app = FastAPI(
     title="팀 에이전트 시스템 AI 서버",
@@ -61,7 +68,12 @@ app = FastAPI(
 # CORS 설정 (React 앱과 통신을 위해)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8002", "http://127.0.0.1:3000"],  # React 개발 서버
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:8002",
+        "http://127.0.0.1:3000",
+    ],  # React 개발 서버
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,7 +85,7 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     message: str
     user_id: Optional[str] = None
-    channel_type: Optional[str] = "web" # 기본값은 'web'으로 설정
+    channel_type: Optional[str] = "web"  # 기본값은 'web'으로 설정
     channel_id: Optional[str] = "web"
 
 
@@ -108,15 +120,33 @@ class SecurityAnalysisResponse(BaseModel):
 class ManagerAgent:
     def __init__(self):
         self.name = "Manager Agent"
-        self.system_prompt = """당신은 팀 에이전트 시스템의 중앙 관리자입니다. 
-사용자의 요청을 분석하고 적절한 전문 에이전트를 선택해야 합니다.
+        self.system_prompt = """너는 멀티-에이전트 라우터다. 후보: code | rag | schedule | document | security | finalize.
+                    반드시 하나를 고르고, 한 줄 JSON으로만 출력.
+                    출력 예시: {"selected_agent": "code", "reason": "코드 관련 요청", "confidence": 0.95}
 
-사용 가능한 에이전트:
-1. Code Agent: 코드 리뷰, 버그 탐지, 코드 품질 개선, Git 관리
-2. Security Agent: 코드 보안 취약점 분석, 정적 분석, 수정 제안
-3. Document Agent: 문서 작성, 편집, 검색, API 문서 생성
-4. Schedule Agent: 프로젝트 일정 관리, 마일스톤 추적, 팀원 작업량 분배
-5. RAG Agent: 문서 검색 및 지식 기반 질문 답변
+에이전트 정의(라벨/신호/금지):
+- code:
+  - 내부 지원: find_code(코드 위치/검색), pr_summary(최신 PR 요약), code_review(코드 리뷰)
+  - 강한 신호(있으면 code 후보 가중 ↑): 코드블록(백틱 ```), PR/변경/리뷰 키워드("PR","pull request","PR 요약","diff","변경사항","코드 리뷰","리팩터"), 코드 탐색/위치("기능 찾기","어느 파일/함수/경로","search code","참조","함수","클래스","파일","import","def ","class ")
+  - 금지/감점: 일정 키워드(아래 schedule)를 포함하면 code 우선순위↓, 문서 작성 전용 요청(아래 document)은 code 제외
+  - 제약: pr_summary는 최신 PR만 요약(GITHUB_REPO/TOKEN 필요). 특정 PR URL이 있어도 현 버전은 무시.
+
+- rag:
+  - 문서/지식 기반 질의: "문서", "근거", "가이드", "README", "API 문서", "docs", 일반적인 문서 질의
+  - 감점: 코드블록/PR/리뷰/탐색/github 신호가 강하면 rag의 우선순위↓
+  - 산출은 문서 근거/요약 중심
+
+- schedule:
+  - 일정/캘린더: "회의", "일정", "스케줄", "예약", "캘린더", "미팅"
+  - 일정 신호가 있으면 schedule을 code/rag/document보다 우선
+
+- document:
+  - 산출물 작성/편집: "문서 작성/편집", "가이드 작성", "API 문서 만들어줘"
+  - 근거/검색은 rag로, 코드 맥락/리뷰/탐색은 code로
+
+- security:
+  - 보안/취약점 키워드: "보안","취약점","vulnerability","security","해킹","공격"
+  - 코드 리뷰/PR 요약과 혼동하지 말 것
 
 응답 형식:
 {
@@ -127,9 +157,63 @@ class ManagerAgent:
 
     async def analyze_prompt(self, message: str) -> dict:
         """사용자 프롬프트를 분석하고 적절한 에이전트를 선택"""
+        # Heuristic override: strong PR/code signals -> force code
+        msg = message or ""
+        message_lower = msg.lower()
+        strong_pr_signal = (
+            re.search(r"github\.com/.+?/pull/\d+", msg) is not None
+            or "```" in msg
+            or any(
+                k in message_lower
+                for k in [
+                    "깃",
+                    "깃허브",
+                    "git",
+                    "github",
+                    "push",
+                    "merge",
+                    "commit",
+                    "pr",
+                    "pull request",
+                    "pr 요약",
+                    "diff",
+                    "변경사항",
+                    "코드 리뷰",
+                    "리뷰해줘",
+                    "리팩터",
+                    "코드",
+                    "코드 설명",
+                    "함수",
+                    "클래스",
+                    "파일",
+                    "경로",
+                    "import",
+                    "def ",
+                    "class ",
+                    "기능",
+                    "어느 함수",
+                    "search code",
+                    "참조",
+                ]
+            )
+        )
+        schedule_hit = any(
+            k in message_lower
+            for k in ["회의", "일정", "스케줄", "예약", "캘린더", "미팅"]
+        )
+        if strong_pr_signal and not schedule_hit:
+            decision = {
+                "selected_agent": "code",
+                "reason": "heuristic override: strong PR/code signals",
+                "confidence": 0.98,
+            }
+            print(f"[Manager] Decision(override): {decision} | message={message}")
+            return decision
+
         if not openai.api_key:
-            # API 키가 없을 때는 키워드 기반 분석
-            return self._fallback_analysis(message)
+            decision = self._fallback_analysis(message)
+            print(f"[Manager] Decision(fallback): {decision} | message={message}")
+            return decision
 
         try:
             response = openai.chat.completions.create(
@@ -144,69 +228,162 @@ class ManagerAgent:
 
             result = response.choices[0].message.content
             try:
-                return json.loads(result)
+                parsed = json.loads(result)
             except:
-                return self._fallback_analysis(message)
+                parsed = self._fallback_analysis(message)
+            print(f"[Manager] Decision(llm): {parsed} | message={message}")
+            return parsed
 
         except Exception as e:
             print(f"Manager Agent 오류: {e}")
-            return self._fallback_analysis(message)
+            decision = self._fallback_analysis(message)
+            print(
+                f"[Manager] Decision(error->fallback): {decision} | message={message}"
+            )
+            return decision
 
     def _fallback_analysis(self, message: str) -> dict:
-        """API 키가 없을 때 사용하는 키워드 기반 분석"""
-        message_lower = message.lower()
+        """API 키가 없을 때 사용하는 키워드 기반 분석 (강한 신호 + 점수 기반)"""
+        msg = message or ""
+        message_lower = msg.lower()
+
+        # 1) 강한 신호: PR URL, 코드블록, 명시적 키워드
+        pr_url = re.search(r"github\.com/.+?/pull/\d+", msg) is not None
+        code_block = "```" in msg
+        pr_keywords = any(
+            k in message_lower
+            for k in [
+                "pr",
+                "pull request",
+                "pr 요약",
+                "diff",
+                "변경사항",
+                "깃",
+                "깃허브",
+                "git",
+                "github",
+                "push",
+                "merge",
+                "commit",
+            ]
+        )
+        review_keywords = any(
+            k in message_lower
+            for k in [
+                "코드 리뷰",
+                "리뷰해줘",
+                "코드 설명",
+                "리팩터",
+                "refactor",
+                "review",
+            ]
+        )
+        find_code_keywords = any(
+            k in message_lower
+            for k in [
+                "기능 찾기",
+                "어디 파일",
+                "어느 함수",
+                "경로",
+                "search code",
+                "참조",
+            ]
+        ) or any(
+            k in message_lower
+            for k in ["함수", "클래스", "파일", "경로", "import", "def ", "class "]
+        )
+
+        if pr_url or code_block or pr_keywords or review_keywords or find_code_keywords:
+            return {
+                "selected_agent": "code",
+                "reason": "강한 신호로 code 라우팅",
+                "confidence": 0.95,
+            }
+
+        # 2) 점수 기반
+        score = 0
+        if pr_keywords:
+            score += 3
+        if review_keywords:
+            score += 3
+        if code_block:
+            score += 4
+        if find_code_keywords:
+            score += 2
+
+        # 일정/문서 신호는 code 점수 무력화
+        schedule_hit = any(
+            k in message_lower
+            for k in ["회의", "일정", "스케줄", "예약", "캘린더", "미팅"]
+        )
+        if schedule_hit:
+            score = 0
+        doc_hit = any(
+            k in message_lower
+            for k in [
+                "문서",
+                "근거",
+                "가이드",
+                "readme",
+                "api 문서",
+                "docs",
+                "documentation",
+                "guide",
+            ]
+        )
+
+        if score >= 4:
+            return {
+                "selected_agent": "code",
+                "reason": f"code score={score}",
+                "confidence": 0.9,
+            }
+
+        # 이하 기존 규칙 유지
+        if doc_hit or any(
+            word in message_lower
+            for word in ["검색", "찾아", "알려", "질문", "문서에서", "자료에서"]
+        ):
+            return {
+                "selected_agent": "rag",
+                "reason": "문서 검색/질문",
+                "confidence": 0.8,
+            }
+
+        if any(
+            word in message_lower
+            for word in [
+                "문서",
+                "작성",
+                "편집",
+                "api",
+                "readme",
+                "docs",
+                "documentation",
+            ]
+        ):
+            return {
+                "selected_agent": "document",
+                "reason": "문서 작성/편집",
+                "confidence": 0.8,
+            }
+
+        if schedule_hit or any(
+            word in message_lower for word in ["마일스톤", "데드라인", "프로젝트"]
+        ):
+            return {
+                "selected_agent": "schedule",
+                "reason": "일정 관련",
+                "confidence": 0.8,
+            }
 
         if any(
             word in message_lower
             for word in ["코드", "버그", "리뷰", "개발", "git", "repository"]
         ):
-            return {
-                "selected_agent": "code",
-                "reason": "코드 관련 요청 감지",
-                "confidence": 0.8,
-            }
-        elif any(
-            word in message_lower
-            for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security"]
-        ):
-            return {
-                "selected_agent": "security",
-                "reason": "보안 분석 요청 감지",
-                "confidence": 0.9,
-            }
-        elif any(
-            word in message_lower
-            for word in ["검색", "찾아", "알려", "질문", "답변", "문서에서", "자료에서"]
-        ):
-            return {
-                "selected_agent": "rag",
-                "reason": "문서 검색/질문 답변 요청 감지",
-                "confidence": 0.8,
-            }
-        elif any(
-            word in message_lower
-            for word in ["문서", "작성", "편집", "api", "readme", "docs"]
-        ):
-            return {
-                "selected_agent": "document",
-                "reason": "문서 관련 요청 감지",
-                "confidence": 0.8,
-            }
-        elif any(
-            word in message_lower
-            for word in ["일정", "스케줄", "마일스톤", "데드라인", "프로젝트"]
-        ):
-            return {
-                "selected_agent": "schedule",
-                "reason": "일정 관련 요청 감지",
-                "confidence": 0.8,
-            }
-        else:
-            return {
-                "selected_agent": "general",
-                "reason": "일반적인 대화",
-                "confidence": 0.5,
-            }
+            return {"selected_agent": "code", "reason": "코드 관련", "confidence": 0.8}
+
+        return {"selected_agent": "general", "reason": "일반 대화", "confidence": 0.5}
 
 
 class DocumentAgent:
@@ -278,9 +455,10 @@ async def health_check():
     }
 
 
-@app.post("/ai/process",
+@app.post(
+    "/ai/process",
     response_model=ChatResponse,
-    summary = "사용자 메시지를 처리하고 적절한 에이전트를 호출합니다.",
+    summary="사용자 메시지를 처리하고 적절한 에이전트를 호출합니다.",
     description="""
     관리자 에이전트가 사용자 메시지를 분석하여 가장 적합한 전문 에이전트에게
     처리를 위임합니다.
@@ -316,17 +494,19 @@ async def process_chat(chat_message: ChatMessage):
         elif selected_agent == "schedule":
             # ScheduleAgent가 선택되면, 웹 어댑터를 생성하여 실행
             web_adapter = WebAdapter()
-            user_id = chat_message.user_id if chat_message.user_id else "web_user"  # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
+            user_id = (
+                chat_message.user_id if chat_message.user_id else "web_user"
+            )  # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
             channel_id = chat_message.channel_id if chat_message.channel_id else "web"
-            
+
             # ScheduleAgent의 process 메서드 호출
             web_schedule_agent.process(
                 message=chat_message.message,
-                adapter=web_adapter, # WebAdapter 인스턴스 전달
+                adapter=web_adapter,  # WebAdapter 인스턴스 전달
                 user_id=user_id,
-                channel_id=channel_id
+                channel_id=channel_id,
             )
-            response = web_adapter.get_response() # WebAdapter에 저장된 응답 가져오기
+            response = web_adapter.get_response()  # WebAdapter에 저장된 응답 가져오기
             agents_used.append("schedule")
         elif selected_agent == "rag":
             response = await rag_agent.process(chat_message.message)
@@ -354,7 +534,8 @@ async def process_chat(chat_message: ChatMessage):
         )
 
 
-@app.post("/ai/agents/{agent_type}",
+@app.post(
+    "/ai/agents/{agent_type}",
     summary="특정 에이전트를 직접 호출합니다.",
     description="""
     관리자 에이전트의 분석 없이 특정 전문 에이전트를 직접 호출합니다.
@@ -372,33 +553,39 @@ async def call_specific_agent(agent_type: str, chat_message: ChatMessage):
         elif agent_type == "schedule":
             # ScheduleAgent가 선택되면, 웹 어댑터를 생성하여 실행
             web_adapter = WebAdapter()
-            user_id = chat_message.user_id if chat_message.user_id else "web_user" # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
+            user_id = (
+                chat_message.user_id if chat_message.user_id else "web_user"
+            )  # TODO: 실제 환경에서는 실제 사용자 ID를 사용해야 함
             channel_id = chat_message.channel_id if chat_message.channel_id else "web"
-            
+
             # ScheduleAgent의 process 메서드 호출
             web_schedule_agent.process(
                 message=chat_message.message,
-                adapter=web_adapter, # WebAdapter 인스턴스 전달
+                adapter=web_adapter,  # WebAdapter 인스턴스 전달
                 user_id=user_id,
-                channel_id=channel_id
+                channel_id=channel_id,
             )
-            response = await web_adapter.get_response() # WebAdapter에 저장된 응답 가져오기
+            response = (
+                await web_adapter.get_response()
+            )  # WebAdapter에 저장된 응답 가져오기
         elif agent_type == "rag":
             response = await rag_agent.process(chat_message.message)
         elif agent_type == "security":
             # Security Agent는 코드 분석이므로 메시지를 코드로 간주
             analysis_request = {
                 "code": chat_message.message,
-                "metadata": {"threshold": 0.6}
+                "metadata": {"threshold": 0.6},
             }
             result = security_agent.analyze(analysis_request)
             response = f"보안 분석 결과:\n"
             response += f"언어: {result['language']}\n"
             response += f"위험도: {result['risk_score']}%\n"
-            response += f"취약성 여부: {'예' if result['is_vulnerable'] else '아니오'}\n"
-            if result['findings']:
+            response += (
+                f"취약성 여부: {'예' if result['is_vulnerable'] else '아니오'}\n"
+            )
+            if result["findings"]:
                 response += f"발견된 문제: {len(result['findings'])}개\n"
-            if result['proposed_fix']:
+            if result["proposed_fix"]:
                 response += f"수정 제안: {result['proposed_fix']['strategy']}"
         elif agent_type == "manager":
             analysis = await manager_agent.analyze_prompt(chat_message.message)
@@ -430,28 +617,29 @@ async def analyze_security(request: SecurityAnalysisRequest):
         input_data = {
             "code": request.code,
             "language": request.language,
-            "metadata": request.metadata or {"threshold": 0.6}
+            "metadata": request.metadata or {"threshold": 0.6},
         }
-        
+
         # Security Agent로 분석 실행
         result = security_agent.analyze(input_data)
-        
+
         return SecurityAnalysisResponse(**result)
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"보안 분석 중 오류가 발생했습니다: {str(e)}"
         )
 
 
-@app.post("/ai/rag/add-documents",
+@app.post(
+    "/ai/rag/add-documents",
     summary="RAG Agent에 새 문서를 추가합니다.",
     description="""
     RAG(Retrieval-Augmented Generation) 시스템에 문서 경로 목록을 제공하여
     새로운 지식 기반을 구축합니다.
     """,
     tags=["RAG Agent"],
-    )
+)
 async def add_documents_to_rag(file_paths: List[str]):
     """RAG Agent에 새 문서 추가"""
     try:
