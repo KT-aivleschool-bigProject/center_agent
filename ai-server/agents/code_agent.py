@@ -24,34 +24,105 @@ def extract_json_from_codeblock(text: str) -> str:
 
 # --- LLM 기반 프롬프트 분류 ---
 def classify_prompt(user_prompt: str) -> str:
+    # OPENAI_API_KEY 없을 때: 키워드 기반 빠른 분류로 폴백
+    if not OPENAI_API_KEY:
+        up = user_prompt or ""
+        up_lower = up.lower()
+        # PR/요약/깃 신호
+        if re.search(r"github\.com/.+?/pull/\d+", up) or any(
+            k in up_lower
+            for k in [
+                "pr",
+                "pull request",
+                "pr 요약",
+                "diff",
+                "변경사항",
+                "깃",
+                "깃허브",
+                "git",
+                "github",
+                "push",
+                "merge",
+                "commit",
+            ]
+        ):
+            return "pr_summary"
+        # 코드 리뷰/설명 신호
+        if (
+            any(
+                k in up_lower
+                for k in [
+                    "코드 리뷰",
+                    "리뷰해줘",
+                    "코드 설명",
+                    "리팩터",
+                    "refactor",
+                    "review",
+                ]
+            )
+            or "```" in up
+        ):
+            return "code_review"
+        # 기능 코드 찾기 신호
+        if any(
+            k in up_lower
+            for k in [
+                "기능 찾기",
+                "어디 파일",
+                "어느 함수",
+                "경로",
+                "search code",
+                "참조",
+                "함수",
+                "클래스",
+                "파일",
+                "import",
+                "def ",
+                "class ",
+            ]
+        ):
+            return "find_code"
+        return "other"
+
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
                 """당신은 분류기입니다. 
-                사용자의 요청이 코드에서 특정 기능을 찾는 요청이면 'find_code', 
-                PR 요약 요청이면 'pr_summary', 코드 리뷰/설명이면 'code_review', 
-                그 외는 'other'로만 답하세요. 반드시 json으로 {{\"type\": \"...\"}} 형식으로 답하세요.""",
+                사용자의 요청이 github의 코드에서 특정 기능을 찾는 요청이면 핵심키워드는['기능','찾아줘','코드'] 이며 답은 'find_code', 
+                PR 요약 요청이거나 git push에 대한 요약 요청이면 핵심키워드는 ['PR','요약','요약해줘','깃','깃허브','git','github','push'] 이며 답은 'pr_summary', 
+                사용자가 코드를 직접주면서 요청이 리뷰/설명이면 핵심키워드는 ['리뷰','설명','리뷰해줘','코드','코드리뷰'] 이며 답은 'code_review', 
+                그 외는 'other'로만 답하세요. 
+                반드시 json으로 {{\"type\": \"...\"}} 형식으로 답하세요.""",
             ),
             ("human", "{user_prompt}"),
         ]
     )
-    llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, temperature=0)
-    chain = prompt | llm
-    result = chain.invoke({"user_prompt": user_prompt})
-    import json
+    try:
+        llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, temperature=0)
+        chain = prompt | llm
+        result = chain.invoke({"user_prompt": user_prompt})
+    except Exception as e:
+        print(f"분류 LLM 호출 오류: {e}")
+        # 키워드 폴백
+        return (
+            classify_prompt.__wrapped__(user_prompt)
+            if hasattr(classify_prompt, "__wrapped__")
+            else "other"
+        )
 
     try:
         json_str = extract_json_from_codeblock(result.content)
         type_str = json.loads(json_str)["type"]
         print(type_str)
     except Exception as e:
-        print(f"분류 LLM 응답 오류: {e}, content: {result.content}")
+        print(f"분류 LLM 응답 오류: {e}, content: {getattr(result, 'content', result)}")
         type_str = "other"
     return type_str
 
 
 # --- LLM 기반 기능 키워드 추출 ---
+# 특정 기능 코드 찾기
 def extract_feature_from_prompt(prompt: str) -> str:
     if not OPENAI_API_KEY:
         return prompt
@@ -68,7 +139,6 @@ def extract_feature_from_prompt(prompt: str) -> str:
     chain = feature_prompt | llm
     result = chain.invoke({"user_prompt": prompt})
 
-
     try:
         json_str = extract_json_from_codeblock(result.content)
         feature = json.loads(json_str)["feature"]
@@ -81,9 +151,10 @@ def extract_feature_from_prompt(prompt: str) -> str:
 # --- GitHub 코드 검색 ---
 def github_code_search(query, repo_full_name, github_token):
     headers = {
-        "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3+json",
     }
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
     url = f"https://api.github.com/search/code"
     params = {"q": f"{query} repo:{repo_full_name}", "per_page": 3}
     resp = requests.get(url, headers=headers, params=params)
@@ -108,7 +179,12 @@ def github_code_search(query, repo_full_name, github_token):
 
 
 def find_code_for_feature_github(feature, repo_full_name, github_token):
-    results = github_code_search(feature, repo_full_name, github_token)
+    if not repo_full_name:
+        return "GITHUB_REPO 환경변수가 설정되어 있지 않습니다. .env에 GITHUB_REPO=owner/repo 를 설정하세요."
+    try:
+        results = github_code_search(feature, repo_full_name, github_token)
+    except Exception as e:
+        return f"GitHub 코드 검색 중 오류: {e}. 토큰 또는 리포 설정을 확인하세요."
     if not results:
         return f"'{feature}' 기능을 포함하는 코드를 찾지 못했습니다."
     response = f"'{feature}' 기능이 포함된 파일:\n"
@@ -214,10 +290,13 @@ def find_code_node(state: dict) -> dict:
 
 
 def pr_summary_node(state: dict) -> dict:
-    pr = fetch_latest_pr()
-    summary = summarize_pr(pr)
-    explanation = explain_pr(pr)
-    state["result"] = f"### PR 요약\n{summary}\n\n### PR 설명\n{explanation}"
+    try:
+        pr = fetch_latest_pr()
+        summary = summarize_pr(pr)
+        explanation = explain_pr(pr)
+        state["result"] = f"### PR 요약\n{summary}\n\n### PR 설명\n{explanation}"
+    except Exception as e:
+        state["result"] = f"PR 정보를 가져오지 못했습니다: {e}"
     return state
 
 
