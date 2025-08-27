@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -6,6 +6,10 @@ from typing import List, Optional
 from threading import Thread
 import asyncio
 import os
+import shutil
+import logging
+from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 import openai
 import json
@@ -21,6 +25,10 @@ from agents.schedule import slack_app
 
 # 환경변수 로드
 load_dotenv()
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # OpenAI API 설정
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -114,6 +122,25 @@ class SecurityAnalysisResponse(BaseModel):
     threshold: float
     findings: List[dict]
     proposed_fix: Optional[dict]
+
+
+class AnalyzeDocumentRequest(BaseModel):
+    projectId: str
+    fileId: str
+    sasUrl: str
+
+
+class ProjectAttachmentRequest(BaseModel):
+    projectId: str
+    fileId: str
+    sasUrl: str
+
+
+class ProjectAttachmentAutoCreated(BaseModel):
+    projectId: str
+    fileId: str
+    status: str
+    message: str
 
 
 # 에이전트 클래스들
@@ -210,6 +237,15 @@ class ManagerAgent:
             print(f"[Manager] Decision(override): {decision} | message={message}")
             return decision
 
+        # 보안 관련 키워드가 있으면 우선적으로 security agent 선택
+        message_lower = message.lower()
+        if any(word in message_lower for word in ["보안", "취약점", "취약성", "해킹", "공격", "vulnerability", "security", "분석해줘"]):
+            return {
+                "selected_agent": "security",
+                "reason": "보안 분석 요청 감지",
+                "confidence": 0.95,
+            }
+        
         if not openai.api_key:
             decision = self._fallback_analysis(message)
             print(f"[Manager] Decision(fallback): {decision} | message={message}")
@@ -228,7 +264,15 @@ class ManagerAgent:
 
             result = response.choices[0].message.content
             try:
-                parsed = json.loads(result)
+                parsed_result = json.loads(result)
+                # 보안 관련 키워드가 있는데 security가 선택되지 않았다면 강제로 security 선택
+                if any(word in message_lower for word in ["보안", "취약점", "분석해줘", "security"]) and parsed_result.get("selected_agent") != "security":
+                    return {
+                        "selected_agent": "security",
+                        "reason": "보안 분석 요청 감지 (강제 선택)",
+                        "confidence": 0.9,
+                    }
+                return parsed_result
             except:
                 parsed = self._fallback_analysis(message)
             print(f"[Manager] Decision(llm): {parsed} | message={message}")
@@ -338,9 +382,16 @@ class ManagerAgent:
                 "reason": f"code score={score}",
                 "confidence": 0.9,
             }
-
-        # 이하 기존 규칙 유지
-        if doc_hit or any(
+        elif any(
+            word in message_lower
+            for word in ["코드", "버그", "리뷰", "개발", "git", "repository", "function", "login"]
+        ):
+            return {
+                "selected_agent": "code",
+                "reason": "코드 관련 요청 감지",
+                "confidence": 0.8,
+            }
+        elif any(
             word in message_lower
             for word in ["검색", "찾아", "알려", "질문", "문서에서", "자료에서"]
         ):
@@ -511,6 +562,41 @@ async def process_chat(chat_message: ChatMessage):
         elif selected_agent == "rag":
             response = await rag_agent.process(chat_message.message)
             agents_used.append("rag")
+        elif selected_agent == "security":
+            # Security Agent는 코드 분석이므로 메시지를 코드로 간주
+            analysis_request = {
+                "code": chat_message.message,
+                "metadata": {"threshold": 0.6}
+            }
+            result = security_agent.analyze(analysis_request)
+            response = f"🔒 **보안 분석 결과**\n\n"
+            response += f"📋 **언어**: {result['language']}\n"
+            response += f"⚠️ **위험도**: {result['risk_score']}%\n"
+            response += f"🚨 **취약성 여부**: {'예' if result['is_vulnerable'] else '아니오'}\n\n"
+            
+            if result['findings']:
+                response += f"🔍 **발견된 보안 문제** ({len(result['findings'])}개):\n"
+                for i, finding in enumerate(result['findings'], 1):
+                    # finding['detail']에서 제목과 설명 분리
+                    detail = finding['detail']
+                    if ':' in detail:
+                        title, desc = detail.split(':', 1)
+                        response += f"  **{i}. {title.strip()}**\n"
+                        response += f"     └ {desc.strip()}\n\n"
+                    else:
+                        response += f"  **{i}. {detail}**\n\n"
+                
+            if result['proposed_fix']:
+                response += f"💡 **수정 제안**:\n{result['proposed_fix']['strategy']}\n"
+                if result['proposed_fix'].get('code'):
+                    response += f"\n```\n{result['proposed_fix']['code']}\n```"
+            else:
+                response += f"💡 **권장사항**:\n"
+                response += f"• 입력 데이터 검증 및 필터링 강화\n"
+                response += f"• 안전한 함수/라이브러리 사용\n"
+                response += f"• 정기적인 보안 코드 리뷰 실시"
+            
+            agents_used.append("security")
         else:
             # 일반적인 대화는 모든 에이전트의 도움을 받아 응답
             response = f"안녕하세요! '{chat_message.message}'에 대한 응답입니다.\n\n"
@@ -631,6 +717,144 @@ async def analyze_security(request: SecurityAnalysisRequest):
         )
 
 
+@app.post("/upload",
+    summary="파일 업로드",
+    description="외부 마이크로서비스에서 프로젝트 파일을 업로드합니다.",
+    tags=["File Upload"],
+)
+async def upload_file(file: UploadFile = File(...)):
+    """외부 마이크로서비스에서 프로젝트 파일 업로드"""
+    try:
+        logger.info(f"파일 업로드 요청 수신: {file.filename}")
+        
+        # ai-server/data/docs 디렉토리 생성
+        docs_dir = Path("data/docs")
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 파일 저장
+        file_path = docs_dir / file.filename
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        logger.info(f"파일 업로드 완료: {file.filename} -> {file_path}")
+        return {
+            "status": "success",
+            "message": "File uploaded successfully",
+            "filename": file.filename,
+            "file_path": str(file_path)
+        }
+    except Exception as e:
+        logger.error(f"파일 업로드 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+@app.post("/analyze",
+    summary="프로젝트 첨부파일 분석",
+    description="업로드된 파일을 RAG 시스템에 분석 및 추가합니다.",
+    tags=["RAG Agent"],
+)
+async def analyze_project_attachment(request: ProjectAttachmentRequest):
+    """프로젝트 첨부파일 분석 및 RAG 시스템 추가"""
+    try:
+        logger.info(f"파일 분석 요청: 프로젝트 {request.projectId}, 파일 {request.fileId}")
+        
+        # 파일 경로 추출 (sasUrl에서 파일명만 추출)
+        filename = os.path.basename(request.sasUrl)
+        file_path = Path("data/docs") / filename
+        
+        if not file_path.exists():
+            logger.warning(f"파일이 존재하지 않음: {file_path}")
+            raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+        
+        # RAG 에이전트에서 파일 처리
+        result = await rag_agent.process_new_document(
+            file_path=str(file_path), 
+            project_id=request.projectId,
+            file_id=request.fileId
+        )
+        
+        logger.info(f"파일 분석 완료: {filename}, 프로젝트: {request.projectId}")
+        
+        return ProjectAttachmentAutoCreated(
+            projectId=request.projectId,
+            fileId=request.fileId,
+            status="processed",
+            message="File successfully added to RAG system"
+        )
+    except Exception as e:
+        logger.error(f"파일 분석 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/upload",
+    summary="파일 업로드",
+    description="외부 마이크로서비스에서 프로젝트 파일을 업로드합니다.",
+    tags=["File Upload"],
+)
+async def upload_file(file: UploadFile = File(...)):
+    """외부 마이크로서비스에서 프로젝트 파일 업로드"""
+    try:
+        logger.info(f"파일 업로드 요청 수신: {file.filename}")
+        
+        # ai-server/data/docs 디렉토리 생성
+        docs_dir = Path("data/docs")
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 파일 저장
+        file_path = docs_dir / file.filename
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        logger.info(f"파일 업로드 완료: {file.filename} -> {file_path}")
+        return {
+            "status": "success",
+            "message": "File uploaded successfully",
+            "filename": file.filename,
+            "file_path": str(file_path)
+        }
+    except Exception as e:
+        logger.error(f"파일 업로드 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+@app.post("/analyze",
+    summary="프로젝트 첨부파일 분석",
+    description="업로드된 파일을 RAG 시스템에 분석 및 추가합니다.",
+    tags=["RAG Agent"],
+)
+async def analyze_project_attachment(request: ProjectAttachmentRequest):
+    """프로젝트 첨부파일 분석 및 RAG 시스템 추가"""
+    try:
+        logger.info(f"파일 분석 요청: 프로젝트 {request.projectId}, 파일 {request.fileId}")
+        
+        # 파일 경로 추출 (sasUrl에서 파일명만 추출)
+        filename = os.path.basename(request.sasUrl)
+        file_path = Path("data/docs") / filename
+        
+        if not file_path.exists():
+            logger.warning(f"파일이 존재하지 않음: {file_path}")
+            raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+        
+        # RAG 에이전트에서 파일 처리
+        result = await rag_agent.process_new_document(
+            file_path=str(file_path), 
+            project_id=request.projectId,
+            file_id=request.fileId
+        )
+        
+        logger.info(f"파일 분석 완료: {filename}, 프로젝트: {request.projectId}")
+        
+        return ProjectAttachmentAutoCreated(
+            projectId=request.projectId,
+            fileId=request.fileId,
+            status="processed",
+            message="File successfully added to RAG system"
+        )
+    except Exception as e:
+        logger.error(f"파일 분석 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
 @app.post(
     "/ai/rag/add-documents",
     summary="RAG Agent에 새 문서를 추가합니다.",
@@ -648,6 +872,33 @@ async def add_documents_to_rag(file_paths: List[str]):
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"문서 추가 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+
+@app.post("/ai/rag/search",
+    summary="문서 검색",
+    description="RAG 시스템에서 문서를 검색합니다. 프로젝트별 필터링을 지원합니다.",
+    tags=["RAG Agent"],
+)
+async def search_documents_endpoint(
+    query: str,
+    project_id: Optional[str] = None,
+    limit: int = 5
+):
+    """문서 검색 (프로젝트 필터링 지원)"""
+    try:
+        results = await rag_agent.search_documents(query, project_id, limit)
+        return {
+            "query": query,
+            "project_id": project_id,
+            "results": results,
+            "count": len(results)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"문서 검색 중 오류가 발생했습니다: {str(e)}"
         )
 
 
