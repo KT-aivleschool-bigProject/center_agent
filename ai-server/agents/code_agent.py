@@ -22,6 +22,12 @@ def extract_json_from_codeblock(text: str) -> str:
     return text
 
 
+# 새로 추가: 사용자 프롬프트에서 첫 번째 코드블록만 추출
+def extract_first_code_block(text: str) -> str:
+    match = re.search(r"```(?:[a-zA-Z0-9]+)?\s*([\s\S]+?)\s*```", text)
+    return match.group(1).strip() if match else ""
+
+
 # --- LLM 기반 프롬프트 분류 ---
 def classify_prompt(user_prompt: str) -> str:
     # OPENAI_API_KEY 없을 때: 키워드 기반 빠른 분류로 폴백
@@ -280,6 +286,15 @@ def explain_code_with_llm(code: str) -> str:
 # --- LangGraph 챗봇 그래프 노드 정의 ---
 def entry_node(state: dict) -> dict:
     state["prompt_type"] = classify_prompt(state["user_input"])
+    # code_review인 경우, 사용자 입력에서 코드블록을 추출하여 state["code"]에 저장
+    if state["prompt_type"] == "code_review":
+        extracted = extract_first_code_block(state["user_input"]) or state.get(
+            "code", ""
+        )
+        # 코드블록이 없고 기존 코드가 비어있다면, 안전하게 전체 입력을 코드로 사용
+        if not extracted:
+            extracted = state["user_input"]
+        state["code"] = extracted
     return state
 
 
